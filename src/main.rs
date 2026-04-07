@@ -1,77 +1,93 @@
-fn mainHelloWorld() {
-    // Statements here are executed when the compiled binary is called.
+use std::collections::VecDeque;
+use std::collections::BTreeMap;
 
-    // Print text to the console.
-
-    /*
-    Big comment
-    big comment
-     */
-    println!("Hello World!");
-    let x = 5 + 5;
-    println!("Is `x` 10 or 100? x = {}", x);
-
-    // In general, the `{}` will be automatically replaced with any
-    // arguments. These will be stringified.
-    println!("{} years", 23);
-
-    // Positional arguments can be used. Specifying an integer inside `{}`
-    // determines which additional argument will be replaced. Arguments start
-    // at 0 immediately after the format string.
-    println!("{0}, this is {1}. {1}, this is {0}", "Joel", "Alejandro");
-
-    // As can named arguments.
-    println!("{object} {subject} {verb}",
-             object="hello!",
-             subject="it's me",
-             verb="I've been");
-
-    // Different formatting can be invoked by specifying the format character
-    // after a `:`.
-    println!("Base 10:               {}",   69420); // 69420
-    println!("Base 2 (binary):       {:b}", 69420); // 10000111100101100
-    println!("Base 8 (octal):        {:o}", 69420); // 207454
-    println!("Base 16 (hexadecimal): {:x}", 69420); // 10f2c
-
-    // You can use named arguments in the format specifier by appending a `$`.
-    println!("{number:0>width$}", number=1, width=5); // 00001
-
-    let number: f64 = 1.0;
-    let width: usize = 5;
-    println!("{number:>width$}"); // prints:    1
+/*
+    Se implementa una estructura stack con las funciones principales
+*/
+struct Stack {
+    stack: Vec<u32>,
 }
 
+impl Stack {
+    fn new() -> Self {
+        // Se usa un vector para implementar el stack
+        Stack { stack: Vec::new() }
+    }
+
+    fn push(&mut self, number: u32) {
+        self.stack.push(number);
+    }
+
+    fn pop(&mut self) {
+        // pop() retorna un opcional. Se tiene que extraer de forma segura.
+        let top = self.stack.pop();
+        match top {
+            Some(value) => println!("Removed number = {}", value),
+            None => println!("No value"),
+        }
+    }
+
+    fn top(&self) {
+        // last() retorna un opcional. Se tiene que extraer de forma segura.
+        let top = self.stack.last();
+        match top {
+            Some(value) => println!("Top number = {}", value),
+            None => println!("No value"),
+        }
+    }
+}
+
+
+
 fn main() {
-    // Variables can be type annotated.
-    let logical: bool = true;
+    // Se utiliza la estructura de datos stack creada
+    println!("**Stack");
+    let mut stack : Stack = Stack::new();
+    stack.push(32);
+    stack.push(2);
+    // Se crea el stack = [32, 2]
+    stack.pop(); // stack=[32]
+    stack.top(); // top=32
+    println!("-------------------");
 
-    let a_float: f64 = 1.0;  // Regular annotation
-    let an_integer   = 5i32; // Suffix annotation
+    // Se usa la libreria de std para usar una queue
+    println!("**Queue");
+    let mut queue: VecDeque<u32> = VecDeque::new();
+    queue.push_back(32);
+    queue.push_back(64);
+    let front = queue.pop_front();
+    match front {
+        Some(value) => println!("Removed number = {}", value),
+        None => println!("No value"),
+    }
+    let front = queue.front();
+    match front {
+        Some(value) => println!("Number at the front = {}", value),
+        None => println!("No value"),
+    }
+    println!("-------------------");
 
-    // Or a default will be used.
-    let default_float   = 3.0; // `f64`
-    let default_integer = 7;   // `i32`
+    // Se usa la libreria de BTreeMap para tener un mapa ordenado
+    println!("**Map");
+    let mut movies: BTreeMap<i32, &str> = BTreeMap::new();
+    movies.insert(0, "Iron Man");
+    movies.insert(1, "Captain America");
+    movies.insert(2, "Black Panther");
 
-    // A type can also be inferred from context.
-    let mut inferred_type = 12; // Type i64 is inferred from another line.
-    inferred_type = 4294967296i64;
+    // Se busca un id especifico
+    if !movies.contains_key(&4) {
+        println!("Ghost Rider movie not found");
+    }
+    // Se elimina una pelicula
+    movies.remove(&2);
+    println!("Black panther movie removed");
 
-    // A mutable variable's value can be changed.
-    let mut mutable: i32 = 12; // Mutable `i32`
-    mutable = 21;
-
-    // Error! The type of a variable can't be changed.
-    // mutable = true;
-
-    // Variables can be overwritten with shadowing.
-    let mutable = true;
-
-    /* Compound types - Array and Tuple */
-
-    // Array signature consists of Type T and length as [T; length].
-    let my_array: [i32; 5] = [1, 2, 3, 4, 5];
-
-    // Tuple is a collection of values of different types
-    // and is constructed using parentheses ().
-    let my_tuple = (5u32, 1u8, true, -5.04f32);
+    // Se buscan las peliculas
+    let to_find = [1,2];
+    for id_movie in &to_find {
+        match movies.get(id_movie) {
+            Some(movie_title) => println!("Title = {}", movie_title),
+            None => println!("`{id_movie}` id_key not found.")
+        }
+    }
 }
