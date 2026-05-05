@@ -1,4 +1,7 @@
-Para correr el codigo, se necesita tener instalada la version mas nueva de rust.
+Para correr el codigo, se necesita tener instalada la version mas nueva de rust. El codigo principal se encuentra en src/main. El codigo fue realizado solamente apoyandose con la documentacion de rust y usando las librerias externas: Vector,VecDeque, y BTreeMap.
+
+El codigo fuente se encuentra en:
+https://github.com/Joel-Milla/Compiler
 
 Comando para correr el codigo:
 
