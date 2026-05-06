@@ -1,23 +1,43 @@
-use std::collections::VecDeque;
-use std::collections::BTreeMap;
+mod unit_test;
 
-/*
-    Se implementa una estructura stack con las funciones principales
-*/
-struct Stack {
-    stack: Vec<u32>,
+use pest::Parser;
+use pest_derive::Parser;
+
+#[derive(Parser)]
+#[grammar = "compiler_rules.pest"]
+pub struct CSVParser;
+
+fn main() {
+    let successful_parse = CSVParser::parse(Rule::PROGRAM, 
+    "programa patito; 
+            vars 
+                x : entero;
+                y : flotante;
+                x,y,a30, entero_23 : entero;
+                prueba: flotante;
+            "
+        );
+    println!("{:?}", successful_parse);
 }
 
-impl Stack {
-    fn new() -> Self {
-        // Se usa un vector para implementar el stack
-        Stack { stack: Vec::new() }
+/*
+    use std::collections::VecDeque;
+    use std::collections::BTreeMap;
+    // Se implementa una estructura stack con las funciones principales
+    struct Stack {
+        stack: Vec<u32>,
     }
-
+    
+    impl Stack {
+        fn new() -> Self {
+            // Se usa un vector para implementar el stack
+            Stack { stack: Vec::new() }
+    }
+    
     fn push(&mut self, number: u32) {
         self.stack.push(number);
     }
-
+    
     fn pop(&mut self) {
         // pop() retorna un opcional. Se tiene que extraer de forma segura.
         let top = self.stack.pop();
@@ -26,7 +46,7 @@ impl Stack {
             None => println!("No value"),
         }
     }
-
+    
     fn top(&self) {
         // last() retorna un opcional. Se tiene que extraer de forma segura.
         let top = self.stack.last();
@@ -37,9 +57,7 @@ impl Stack {
     }
 }
 
-
-
-fn main() {
+fn testingOfDataStructures() {
     // Se utiliza la estructura de datos stack creada
     println!("**Stack");
     let mut stack : Stack = Stack::new();
@@ -49,7 +67,7 @@ fn main() {
     stack.pop(); // stack=[32]
     stack.top(); // top=32
     println!("-------------------");
-
+    
     // Se usa la libreria de std para usar una queue
     println!("**Queue");
     let mut queue: VecDeque<u32> = VecDeque::new();
@@ -66,14 +84,14 @@ fn main() {
         None => println!("No value"),
     }
     println!("-------------------");
-
+    
     // Se usa la libreria de BTreeMap para tener un mapa ordenado
     println!("**Map");
     let mut movies: BTreeMap<i32, &str> = BTreeMap::new();
     movies.insert(0, "Iron Man");
     movies.insert(1, "Captain America");
     movies.insert(2, "Black Panther");
-
+    
     // Se busca un id especifico
     if !movies.contains_key(&4) {
         println!("Ghost Rider movie not found");
@@ -81,7 +99,7 @@ fn main() {
     // Se elimina una pelicula
     movies.remove(&2);
     println!("Black panther movie removed");
-
+    
     // Se buscan las peliculas
     let to_find = [1,2];
     for id_movie in &to_find {
@@ -91,3 +109,4 @@ fn main() {
         }
     }
 }
+*/

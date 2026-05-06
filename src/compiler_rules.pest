@@ -1,0 +1,68 @@
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" } // Hace que el programa ignore completamente los espacios entre tokens
+
+//**** Programa principal
+PROGRAM = {SOI ~ "programa" ~ ID ~ ";" ~ VARS? ~ FUNCS* ~ "inicio" ~ BODY ~ "fin" ~ EOI}
+
+//**** Estructura de variable VARS
+VARS = {"vars" ~ MULT_VARS+} // una o mas variables. i.e.: 
+                                // vars
+                                    // x : entero
+                                    // x,y, r: entero
+MULT_VARS = {ID ~ ("," ~ ID)* ~ ":" ~ TYPE ~ ";"}
+
+//**** Estructura de funciones FUNCS
+FUNCS = { ("nula" | TYPE) ~ ID ~ "(" ~ (SINGLE_VARS ~ ("," ~ SINGLE_VARS)*)? ~ ")" ~ "{" ~ VARS? ~ BODY ~ "}" ~ ";" }
+SINGLE_VARS = { ID ~ ":" ~ TYPE}
+
+//**** Estructura de cuerpo BODY
+BODY = { "{" ~ ESTATUTO* ~ "}" }
+
+//**** Estructura de estatutos
+ESTATUTO = {
+    ASIGNA |
+    CONDICION |
+    CICLO |
+    (CALL ~ ";") |
+    IMPRIME |
+    ("[" ~ ESTATUTO* ~ "]")
+}
+ASIGNA = { ID ~ "=" ~ EXPRESION ~ ";" }
+CICLO = {"mientras" ~ "(" ~ EXPRESION ~ ")" ~ "haz" ~ BODY ~ ";"}
+CONDICION = {"si" ~ "(" ~ EXPRESION ~ ")" ~ BODY ~ ("sino" ~ BODY)? ~ ";"}
+IMPRIME = {"escribe" ~ "(" ~  PRINT_STATEMENT ~ ("," ~ PRINT_STATEMENT)* ~ ")" ~ ";"}
+PRINT_STATEMENT = {EXPRESION | LETRERO}
+
+//**** Tokens globales (usadas en varios regex)
+EXPR = { TERM ~ (("+" | "-") ~ TERM)* }
+TERM = { FACTOR ~ ( ("*" | "/") ~ FACTOR)* }
+FACTOR = { SINGLE_EXPR | CALL | SINGLE_FACTOR }
+SINGLE_EXPR = { "(" ~ EXPRESION ~ ")" }
+SINGLE_FACTOR = { ("+" | "-")? ~ (ID | CTE )}
+CALL = { ID ~ "(" ~ 
+        (EXPRESION ~ ("," ~ EXPRESION)* )? ~ 
+        ")" }
+EXPRESION = { EXPR ~ (
+                        ( ">" | "<" | "!=" | "==" ) ~
+                        EXPR
+                    )?
+                    }
+CTE = { cte_flot | cte_ent }
+
+KEYWORD = @{ ("si" | "sino" | "vars" | "entero" | "flotante" | "nula" | "inicio" | "fin" | "programa" | "mientras" | "haz" | "escribe") ~ !ASCII_ALPHANUMERIC } // keywords son las variables que no se consideran como id
+ID = @{ !KEYWORD ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* } // una letra seguida por numeros/letra/guion
+// i.e. hola2, a_2sa
+// se usa '@' sugerencia de claude para que el id no tenga espacios dentro
+
+TYPE = { ("entero" | "flotante") } // el tipo es solo entero o flotante
+cte_ent = @{ ASCII_DIGIT+ } // enteros
+cte_flot = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ } // flotantes
+LETRERO = @{ "'" ~ (!"'" ~ ANY)* ~ "'" } // cualquier string excepto: ""
+
+//**** Tokens especificos para testear si funcionan o no. El EOI obliga a todas las expresiones a usar todos los tokens. Si no tiene eso, no arroja error si hay tokens sin usar. Se supo debido a claude
+TEST_EXPRESION  = { SOI ~ EXPRESION ~ EOI } // sirve para testear si EXPRESION funciona como debe
+TEST_CONDICION  = { SOI ~ CONDICION ~ EOI }
+TEST_ASIGNA  = { SOI ~ ASIGNA ~ EOI }
+TEST_CICLO  = { SOI ~ CICLO ~ EOI }
+TEST_IMPRIME = { SOI ~ IMPRIME ~ EOI}
+TEST_ESTATUTO = { SOI ~ ESTATUTO ~ EOI}
+TEST_FUNCS = { SOI ~ FUNCS ~ EOI}
