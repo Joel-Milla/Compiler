@@ -37,7 +37,7 @@ pub fn obtain_type(left_op: &str, right_op: &str, op: &str) -> &'static str {
 
     let left_i  = match type_index.get(left_op)  { Some(&i) => i, None => return "err" };
     let right_i = match type_index.get(right_op) { Some(&i) => i, None => return "err" };
-    let op_i    = match op_index.get(op) { Some(&i) => i, None => return "err" };
+    let op_i    = match op_index.get(op)          { Some(&i) => i, None => return "err" };
 
     return cube[left_i][right_i][op_i];
 }
@@ -87,112 +87,102 @@ impl DirFunc {
     }
 }
 
+// Procesa un bloque VARS y agrega todas sus variables a la función indicada
+fn procesar_vars(dir: &mut DirFunc, vars_pair: pest::iterators::Pair<Rule>, func: &str) -> Result<(), String> {
+    for mult in vars_pair.into_inner() {
+        if mult.as_rule() == Rule::MULT_VARS {
+            let mut ids  = Vec::new();
+            let mut tipo = String::new();
+
+            for t in mult.into_inner() {
+                match t.as_rule() {
+                    Rule::ID   => ids.push(t.as_str().to_string()),
+                    Rule::TYPE => tipo = t.as_str().to_string(),
+                    _ => {}
+                }
+            }
+
+            for id in &ids {
+                dir.agregar_variable(func, id, &tipo)?;
+                // println!("  ✓ var '{}' : {} en '{}'", id, tipo, func);
+            }
+        }
+    }
+    Ok(())
+}
+
 // Función que camina el árbol de Pest
 pub fn build_dir_func(source: &str) -> Result<DirFunc, String> {
     let pairs = CSVParser::parse(Rule::PROGRAM, source)
         .map_err(|e| format!("Error de sintaxis: {}", e))?;
 
     let mut dir = DirFunc::new();
-    let mut current_func = String::new();  // en qué función estamos ahora
-    let mut current_type = String::new();  // qué tipo vimos más reciente
 
-    // Pest regresa un árbol. flatten() lo convierte en una lista plana de tokens
-    // para poder recorrerlos uno por uno en orden.
-    for pair in pairs.flatten() {
-        match pair.as_rule() {
+    // El árbol tiene un solo nodo raíz: PROGRAM
+    // Entramos manualmente con into_inner()
+    // y así tener control exacto de en qué contexto estamos
+    let program = pairs.into_iter().next().unwrap();
 
-            // ── Punto neurálgico 1: nombre del programa ──────────────────
-            // PROGRAM = { "programa" ~ ID ~ ... }
-            // Cuando encontramos el ID del programa, creamos "global"
-            Rule::PROGRAM => {
-                let nombre = pair.into_inner()
-                    .find(|p| p.as_rule() == Rule::ID)
-                    .unwrap()
-                    .as_str();
+    for node in program.into_inner() {
+        match node.as_rule() {
 
+            // Punto 1: nombre del programa
+            // PROGRAM = { "programa" ~ ID ~ ";" ~ VARS? ~ FUNCS* ~ "inicio" ~ BODY ~ "fin" }
+            // Cuando encontramos el ID creamos la entrada "global" en DirFunc
+            Rule::ID => {
+                let nombre = node.as_str();
                 dir.agregar_funcion("global", "void")?;
-                current_func = "global".to_string();
-                println!("✓ Programa '{}' registrado", nombre);
+                // println!("✓ Programa '{}' registrado", nombre);
             }
 
-            // ── Punto neurálgico 2: tipo encontrado ──────────────────────
-            // Cada vez que vemos TYPE guardamos cuál es para usarlo después
-            Rule::TYPE => {
-                current_type = pair.as_str().to_string();
+            // Punto 2: variables globales
+            // VARS = { "vars" ~ MULT_VARS+ }
+            // Las procesamos y las metemos en "global"
+            Rule::VARS => {
+                procesar_vars(&mut dir, node, "global")?;
             }
 
-            // ── Punto neurálgico 3: declaración de variables ─────────────
-            // MULT_VARS = { ID ~ ("," ~ ID)* ~ ":" ~ TYPE ~ ";" }
-            // Aquí pueden venir varios IDs con el mismo tipo
-            Rule::MULT_VARS => {
-                let mut ids: Vec<&str> = Vec::new();
-                let mut tipo = String::new();
-
-                for inner in pair.into_inner() {
-                    match inner.as_rule() {
-                        Rule::ID   => ids.push(inner.as_str()),
-                        Rule::TYPE => tipo = inner.as_str().to_string(),
-                        _ => {}
-                    }
-                }
-
-                for id in ids {
-                    dir.agregar_variable(&current_func, id, &tipo)?;
-                    println!("  ✓ var '{}' : {} en '{}'", id, tipo, current_func);
-                }
-            }
-
-            // ── Punto neurálgico 4: declaración de función ───────────────
-            // FUNCS = { ("nula" | TYPE) ~ ID ~ "(" ~ ... }
+            // Punto 3: declaración de función
+            // FUNCS = { ("nula" | TYPE) ~ ID ~ "(" ~ SINGLE_VARS? ~ ")" ~ "{" ~ VARS? ~ BODY ~ "}" ~ ";" }
             Rule::FUNCS => {
-                let mut inner = pair.into_inner();
+                let mut inner = node.into_inner();
 
                 // El primer token es el tipo de retorno ("nula" o TYPE)
-                let tipo_ret = inner.next().unwrap().as_str().to_string();
+                let tipo_ret    = inner.next().unwrap().as_str().to_string();
 
                 // El segundo token es el ID (nombre de la función)
                 let nombre_func = inner.next().unwrap().as_str().to_string();
 
                 dir.agregar_funcion(&nombre_func, &tipo_ret)?;
-                current_func = nombre_func.clone();
-                println!("✓ Funcion '{}' : {} registrada", nombre_func, tipo_ret);
+                // println!("✓ Funcion '{}' : {} registrada", nombre_func, tipo_ret);
 
-                // Ahora procesamos los parámetros y variables locales
-                // que vienen dentro de FUNCS
+                // Procesamos el resto de los hijos de FUNCS
                 for sub in inner {
                     match sub.as_rule() {
-                        // Parámetros: SINGLE_VARS = { ID ~ ":" ~ TYPE }
+
+                        // Punto 4: parámetros de la función
+                        // SINGLE_VARS = { ID ~ ":" ~ TYPE }
                         Rule::SINGLE_VARS => {
-                            let mut sv = sub.into_inner();
-                            let id   = sv.next().unwrap().as_str();
-                            let tipo = sv.next().unwrap().as_str();
-                            dir.agregar_variable(&current_func, id, tipo)?;
-                            println!("  ✓ param '{}' : {} en '{}'", id, tipo, current_func);
+                            let mut sv  = sub.into_inner();
+                            let id      = sv.next().unwrap().as_str();
+                            let tipo    = sv.next().unwrap().as_str();
+                            dir.agregar_variable(&nombre_func, id, tipo)?;
+                            // println!("  ✓ param '{}' : {} en '{}'", id, tipo, nombre_func);
                         }
-                        // Variables locales dentro de la función
-                        Rule::MULT_VARS => {
-                            let mut ids: Vec<&str> = Vec::new();
-                            let mut tipo = String::new();
-                            for inner2 in sub.into_inner() {
-                                match inner2.as_rule() {
-                                    Rule::ID   => ids.push(inner2.as_str()),
-                                    Rule::TYPE => tipo = inner2.as_str().to_string(),
-                                    _ => {}
-                                }
-                            }
-                            for id in ids {
-                                dir.agregar_variable(&current_func, id, &tipo)?;
-                                println!("  ✓ var local '{}' : {} en '{}'", id, tipo, current_func);
-                            }
+
+                        // Punto 5: variables locales de la función
+                        // VARS = { "vars" ~ MULT_VARS+ }
+                        Rule::VARS => {
+                            procesar_vars(&mut dir, sub, &nombre_func)?;
                         }
+
+                        // BODY y otros nodos los ignoramos
                         _ => {}
                     }
                 }
-
-                // Al terminar la función regresamos a global
-                current_func = "global".to_string();
             }
 
+            // EOI y otros nodos los ignoramos
             _ => {}
         }
     }

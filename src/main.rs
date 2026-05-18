@@ -42,7 +42,7 @@ fn main() {
 
     match build_dir_func(programa) {
         Ok(dir) => {
-            println!("\n── Directorio de funciones ──");
+            println!("\n ## Directorio de funciones");
             for (nombre, entry) in &dir.funciones {
                 println!("  {} : {}", nombre, entry.tipo);
                 for (var, v) in &entry.vars {
