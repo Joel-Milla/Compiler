@@ -2,7 +2,7 @@ mod unit_test;
 mod semantic;
 
 use pest_derive::Parser;
-use semantic::build_dir_func;
+use semantic::build_compiler; // ← changed
 
 #[derive(Parser)]
 #[grammar = "compiler_rules.pest"]
@@ -17,7 +17,7 @@ fn main() {
         
         flotante function1(id1:entero, sincero:flotante, hola:entero){
             vars
-                var1, x,y : flotante;
+                var1, x, y : flotante;
             {
                 asignacion = 2 + 4;
                 mientras(true) haz {escribe('hola');};
@@ -40,16 +40,23 @@ fn main() {
         fin
     ";
 
-    match build_dir_func(programa) {
-        Ok(dir) => {
-            println!("\n ## Directorio de funciones");
-            for (nombre, entry) in &dir.funciones {
+    match build_compiler(programa) {
+        Ok(compiler) => {
+            // print symbol table
+            println!("\n## Directorio de funciones");
+            for (nombre, entry) in &compiler.dir.funciones {
                 println!("  {} : {}", nombre, entry.tipo);
                 for (var, v) in &entry.vars {
                     println!("    {} : {}", var, v.tipo);
                 }
             }
+
+            // print quadruples
+            println!("\n## Fila de cuádruplos");
+            for (i, q) in compiler.quads.iter().enumerate() {
+                println!("  {:>3}  {}", i, q);
+            }
         }
-        Err(e) => println!("{}", e),
+        Err(e) => println!("Error semántico:\n{}", e),
     }
 }
