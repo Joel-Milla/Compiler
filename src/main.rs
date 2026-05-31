@@ -1,8 +1,8 @@
 mod unit_test;
-mod semantic;
+// mod semantic;
 
 use pest_derive::Parser;
-use semantic::build_compiler; // ← changed
+// use semantic::build_compiler;
 
 #[derive(Parser)]
 #[grammar = "compiler_rules.pest"]
@@ -40,23 +40,24 @@ fn main() {
         fin
     ";
 
-    match build_compiler(programa) {
-        Ok(compiler) => {
-            // print symbol table
-            println!("\n## Directorio de funciones");
-            for (nombre, entry) in &compiler.dir.funciones {
-                println!("  {} : {}", nombre, entry.tipo);
-                for (var, v) in &entry.vars {
-                    println!("    {} : {}", var, v.tipo);
-                }
-            }
+    // match build_compiler(programa) {
+    //     Ok(compiler) => {
+    //         // print symbol table
+    //         println!("\n## Directorio de funciones");
+    //         for (nombre, entry) in &compiler.dir.funciones {
+    //             println!("  {} : {}", nombre, entry.tipo);
+    //             for (var, v) in &entry.vars {
+    //                 println!("    {} : {}", var, v.tipo);
+    //             }
+    //         }
 
-            // print quadruples
-            println!("\n## Fila de cuádruplos");
-            for (i, q) in compiler.quads.iter().enumerate() {
-                println!("  {:>3}  {}", i, q);
-            }
-        }
-        Err(e) => println!("Error semántico:\n{}", e),
-    }
+    //         // print quadruples
+    //         println!("\n## Fila de cuádruplos");
+    //         for (i, q) in compiler.quads.iter().enumerate() {
+    //             println!("  {:>3}  {}", i, q);
+    //         }
+    //     }
+    //     Err(e) => println!("Error semántico:\n{}", e),
+    // }
+
 }

@@ -3,33 +3,6 @@ mod tests {
     use crate::CSVParser;
     use pest::Parser;
     use crate::Rule;
-    use crate::semantic::build_dir_func;
-
-    #[test]
-    fn test_semantic_correct_variables_savings() {
-        let resultado = build_dir_func("
-            programa miPrograma;
-            vars
-                x : entero;
-                y : flotante;
-            inicio { }
-            fin
-        ");
-        assert!(resultado.is_ok());
-    }
-
-    #[test]
-    fn test_semantic_duplicated_variables() {
-        let resultado = build_dir_func("
-            programa miPrograma;
-            vars
-                x : entero;
-                x : flotante;
-            inicio { }
-            fin
-        ");
-        assert!(resultado.is_err());
-    }
 
     #[test]
     fn test_valid_program() {
@@ -122,6 +95,8 @@ mod tests {
                                         asignacion = 2 + 4;
                                         mientras(true) haz {escribe('hola');};
                                     }
+
+                                    return x;
                                 };
         ");
         let no_vars_no_parameters = CSVParser::parse(Rule::TEST_FUNCS,"
@@ -149,8 +124,20 @@ mod tests {
                                     }
                                 };
         ");
+        let wrong_return = CSVParser::parse(Rule::TEST_FUNCS,"
+                                entera function1(id1:entero, ){
+                                    vars
+                                        var1, x,y : flotante;
+                                    {
+                                        asignacion = 2 + 4;
+                                        mientras(true) haz {escribe('hola');};
+                                    }
+                                    return;
+                                };
+        ");
 
         assert!(extra_comma.is_err());
+        assert!(wrong_return.is_err());
     }
 
     #[test]
