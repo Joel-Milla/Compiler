@@ -1,8 +1,9 @@
 #[cfg(test)] // se usa el formato cfg(test) sugerido por claude, el cual es oficial de rust
 mod tests {
-    use crate::CSVParser;
+    use crate::semantic;
+    use semantic::CSVParser;
+    use semantic::Rule;
     use pest::Parser;
-    use crate::Rule;
 
     #[test]
     fn test_valid_program() {
