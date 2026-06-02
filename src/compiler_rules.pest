@@ -11,9 +11,11 @@ VARS = {"vars" ~ MULT_VARS+} // una o mas variables. i.e.:
 MULT_VARS = {ID ~ ("," ~ ID)* ~ ":" ~ TYPE ~ ";"}
 
 //**** Estructura de funciones FUNCS
-FUNCS = { ("nula" | TYPE) ~ ID ~ "(" ~ (SINGLE_VARS ~ ("," ~ SINGLE_VARS)*)? ~ ")" ~ "{" ~ VARS? ~ BODY ~ RETURN? ~ "}" ~ ";" }
+FUNCS = { FUNC_TYPE ~ ID ~ "(" ~ PARAMETERS? ~ ")" ~ "{" ~ VARS? ~ BODY ~ RETURN? ~ "}" ~ ";" }
+PARAMETERS = { SINGLE_VARS ~ ("," ~ SINGLE_VARS)* }
 RETURN = { "return" ~ EXPRESION ~ ";"}
 SINGLE_VARS = { ID ~ ":" ~ TYPE}
+FUNC_TYPE = { "nula" | TYPE }
 
 //**** Estructura de cuerpo BODY
 BODY = { "{" ~ ESTATUTO* ~ "}" }
