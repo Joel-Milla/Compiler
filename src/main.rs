@@ -1,15 +1,12 @@
-mod unit_test;
-// mod semantic;
+mod grammar_unit_test;
+mod semantic;
+mod dir_func;
+mod constants;
 
-use pest_derive::Parser;
-// use semantic::build_compiler;
-
-#[derive(Parser)]
-#[grammar = "compiler_rules.pest"]
-pub struct CSVParser;
+use semantic::Compiler;
 
 fn main() {
-    let programa = "
+    let advanced_programa = "
         programa miPrograma;
         vars
             x, y : entero;
@@ -40,24 +37,21 @@ fn main() {
         fin
     ";
 
-    // match build_compiler(programa) {
-    //     Ok(compiler) => {
-    //         // print symbol table
-    //         println!("\n## Directorio de funciones");
-    //         for (nombre, entry) in &compiler.dir.funciones {
-    //             println!("  {} : {}", nombre, entry.tipo);
-    //             for (var, v) in &entry.vars {
-    //                 println!("    {} : {}", var, v.tipo);
-    //             }
-    //         }
-
-    //         // print quadruples
-    //         println!("\n## Fila de cuádruplos");
-    //         for (i, q) in compiler.quads.iter().enumerate() {
-    //             println!("  {:>3}  {}", i, q);
-    //         }
-    //     }
-    //     Err(e) => println!("Error semántico:\n{}", e),
-    // }
-
+    let programa_basico = "
+        programa miPrograma;
+        vars
+            x : entero;
+            x : flotante;
+        inicio
+            {
+                x = 5;
+            }
+        fin
+    ";
+    let mut compiler = Compiler::new();
+    match compiler.compile_program(programa_basico) {
+        Ok(_)  => println!("Compiled successfully"),
+        Err(e) => println!("Error: {:?}", e),
+    };
 }
+
