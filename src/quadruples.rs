@@ -1,5 +1,5 @@
 
-use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, EQUAL, FAKE_BOTTOM, GOTOF, GOTO}};
+use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, EQUAL, GOTOF, GOTO}};
 use std::{collections::HashMap};
 
 #[derive(Debug, PartialEq)]
@@ -154,9 +154,6 @@ impl Quadruples {
     pub fn pop_op(&mut self) { self.stack_op.pop(); }
 
     pub fn stack_op_last(&self) -> Option<&String> {
-        match self.stack_op.last() {
-            Some(op) if op == FAKE_BOTTOM => None, // Hide the fake bottom from callers
-            other => other,
-        }
+        self.stack_op.last()
     }
 }
