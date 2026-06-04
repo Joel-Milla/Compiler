@@ -1,8 +1,8 @@
 #[cfg(test)] // se usa el formato cfg(test) sugerido por claude, el cual es oficial de rust
 mod tests {
-    use crate::semantic;
-    use semantic::CSVParser;
-    use semantic::Rule;
+    use crate::compiler;
+    use compiler::CSVParser;
+    use compiler::Rule;
     use pest::Parser;
 
     #[test]

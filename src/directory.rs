@@ -83,4 +83,16 @@ impl DirFunc {
         Ok(())
 
     }
+
+    pub fn get_var_type_of(&self, function_name : &str, var_name : &str) -> Result<String, String> {
+
+        //* Validate if function and variable exists */
+        let function = self.functions.get(function_name)
+            .ok_or_else(|| format!("Function '{}' doesn't exist", function_name))?; // ! AI Claude recommended way to get if exsits, or return error if not
+
+        let var_entry = function.vars.get(var_name)
+            .ok_or_else(|| format!("Variable '{}' doesn't exist", function_name))?;
+
+        Ok(var_entry.var_type.clone())
+    }
 }

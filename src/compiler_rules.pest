@@ -32,23 +32,25 @@ ESTATUTO = {
 ASIGNA = { ID ~ "=" ~ EXPRESION ~ ";" }
 CICLO = {"mientras" ~ "(" ~ EXPRESION ~ ")" ~ "haz" ~ BODY ~ ";"}
 CONDICION = {"si" ~ "(" ~ EXPRESION ~ ")" ~ BODY ~ ("sino" ~ BODY)? ~ ";"}
+CALL = { ID ~ "(" ~ 
+        (EXPRESION ~ ("," ~ EXPRESION)* )? ~ 
+        ")" }
 IMPRIME = {"escribe" ~ "(" ~  PRINT_STATEMENT ~ ("," ~ PRINT_STATEMENT)* ~ ")" ~ ";"}
 PRINT_STATEMENT = {EXPRESION | LETRERO}
 
 //**** Tokens globales (usadas en varios regex)
-EXPR = { TERM ~ (("+" | "-") ~ TERM)* }
-TERM = { FACTOR ~ ( ("*" | "/") ~ FACTOR)* }
+EXPR = { TERM ~ (ARITH_OP ~ TERM)* }
+TERM = { FACTOR ~ ( MULT_OP ~ FACTOR)* }
 FACTOR = { SINGLE_EXPR | CALL | SINGLE_FACTOR }
 SINGLE_EXPR = { "(" ~ EXPRESION ~ ")" }
-SINGLE_FACTOR = { ("+" | "-")? ~ (ID | CTE )}
-CALL = { ID ~ "(" ~ 
-        (EXPRESION ~ ("," ~ EXPRESION)* )? ~ 
-        ")" }
-EXPRESION = { EXPR ~ (
-                        ( ">" | "<" | "!=" | "==" ) ~
-                        EXPR
-                    )?
-                    }
+SINGLE_FACTOR = { ARITH_OP? ~ (ID | CTE )}
+
+EXPRESION = { EXPR ~ (OPERATOR ~ EXPR)? }
+
+//**** Special operators (usadas en varios regex)
+OPERATOR = { ">" | "<" | "!=" | "==" }
+ARITH_OP = { "+" | "-" }
+MULT_OP = { "*" | "/" }
 CTE = { cte_flot | cte_ent }
 
 KEYWORD = @{ ("si" | "sino" | "vars" | "entero" | "flotante" | "nula" | "inicio" | "fin" | "programa" | "mientras" | "haz" | "escribe") ~ !ASCII_ALPHANUMERIC } // keywords son las variables que no se consideran como id

@@ -1,9 +1,10 @@
 mod grammar_unit_test;
-mod semantic;
-mod dir_func;
+mod compiler;
+mod directory;
 mod constants;
+mod quadruples;
 
-use semantic::Compiler;
+use compiler::Compiler;
 
 fn main() {
     let advanced_programa = "
