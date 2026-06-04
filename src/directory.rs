@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::constants::GLOBAL;
+
 // ! Claude AI helped me on define what structs should I use to architect the software eficiently.
 #[derive(Debug, PartialEq)] // ParetialEq makes it so can compare two VarEntry, Debug so tests can print the error
 pub struct VarEntry {
@@ -87,11 +89,18 @@ impl DirFunc {
     pub fn get_var_type_of(&self, function_name : &str, var_name : &str) -> Result<String, String> {
 
         //* Validate if function and variable exists */
-        let function = self.functions.get(function_name)
+        let mut function = self.functions.get(function_name)
             .ok_or_else(|| format!("Function '{}' doesn't exist", function_name))?; // ! AI Claude recommended way to get if exsits, or return error if not
 
+        if let Some(var_entry) = function.vars.get(var_name) {
+            return Ok(var_entry.var_type.clone());
+        }
+
+        // Fall back to GLOBAL scope to search for variable
+        function = self.functions.get(GLOBAL)
+            .ok_or_else(|| format!("Function '{}' doesn't exist", function_name))?;
         let var_entry = function.vars.get(var_name)
-            .ok_or_else(|| format!("Variable '{}' doesn't exist", function_name))?;
+            .ok_or_else(|| format!("Variable '{}' doesn't exist", var_name))?;
 
         Ok(var_entry.var_type.clone())
     }

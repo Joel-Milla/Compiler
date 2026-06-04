@@ -23,7 +23,6 @@ pub struct Quadruples {
     stack_vars : Vec<(String, String)>, // (name, type) of the variable
     stack_op : Vec<String>, // Stack to save the operators
     stack_jump : Vec<usize>,
-    pub current_func : String,
     pub temp_count : usize
 }
 
@@ -34,7 +33,6 @@ impl Quadruples {
             stack_vars : Vec::new(),
             stack_op : Vec::new(),
             stack_jump : Vec::new(),
-            current_func : "".to_string(),
             temp_count : 0,
         }
     }

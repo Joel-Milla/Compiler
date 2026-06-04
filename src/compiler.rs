@@ -14,6 +14,7 @@ pub struct CSVParser;
 pub struct Compiler {
     pub directory : DirFunc,
     pub quads : Quadruples,
+    pub current_func : String,
 }
 
 impl Compiler {
@@ -31,6 +32,7 @@ impl Compiler {
         Compiler {
             directory : DirFunc::new(),
             quads : Quadruples::new(),
+            current_func : String::new(),
         }
     }
 
@@ -55,7 +57,7 @@ impl Compiler {
                     },
                     Rule::BODY => {
                         //* Process the body by going to its child and passing 'ESTATUTO' */
-                        self.quads.current_func = GLOBAL.to_string();
+                        self.current_func = GLOBAL.to_string();
                         self.handle_body(program_child)?;
                     }
                     _ => { }
@@ -147,7 +149,7 @@ impl Compiler {
             match assing_child.as_rule() {
                 Rule::ID => {
                     // Save the assign in the stack
-                    let var_type = self.directory.get_var_type_of(&self.quads.current_func, assing_child.as_str())?;
+                    let var_type = self.directory.get_var_type_of(&self.current_func, assing_child.as_str())?;
                     self.quads.push_var(assing_child.as_str().to_string(), var_type);
 
                     // Push the assign operator
@@ -294,7 +296,7 @@ impl Compiler {
         let mut var_type : String = "".to_string();
         match term.as_rule() {
             Rule::ID => {
-                var_type = self.directory.get_var_type_of(&self.quads.current_func, term.as_str())?;
+                var_type = self.directory.get_var_type_of(&self.current_func, term.as_str())?;
 
             },
             Rule::CTE => {
@@ -312,7 +314,7 @@ impl Compiler {
         Ok(())
     }
 
-    //* **** The next functions help build the directory of functions and its variables */
+    /// Handle rule: FUNCS = { FUNC_TYPE ~ ID ~ "(" ~ PARAMETERS? ~ ")" ~ "{" ~ VARS? ~ BODY ~ RETURN? ~ "}" ~ ";" }
     /// Processes the functions processes
     fn processes_function(&mut self, function : Pair<Rule>) -> Result<(), String> {
         //* Iterate over function statements, and processes its type and its variables */
@@ -326,33 +328,18 @@ impl Compiler {
                 },
                 Rule::ID => {
                     function_name = func_child.as_str();
-                    self.directory.create_function(function_name, funct_type)?;
+                    self.directory.create_function(function_name, funct_type)?; // create the function in directory
+                    self.current_func = function_name.to_string();
                 }
                 Rule::PARAMETERS => {
                     //* Process each SINGLE_VAR that exists in parameters */
-                    for params in func_child.into_inner() {
-                        let mut var_name  = "";
-                        let mut var_type;
-                        match params.as_rule() {
-                            Rule::SINGLE_VARS => {
-                                //* Traverse for each variable, its ID and TYPE  */
-                                for var in params.into_inner() {
-                                    match  var.as_rule() {
-                                        Rule::ID => { var_name = var.as_str(); },
-                                        Rule::TYPE => { 
-                                            var_type = var.as_str(); 
-                                            self.directory.add_variable_to_function(function_name, var_name, var_type)?;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                    self.process_params(func_child)?;
                 },
                 Rule::VARS => {
                     self.process_vars(func_child, function_name)?;
+                },
+                Rule::BODY => {
+                    self.handle_body(func_child)?;
                 }
                 _ => {},
             }
@@ -360,6 +347,25 @@ impl Compiler {
         Ok(())
     }
     
+    /// Handle the rule: PARAMETERS = { SINGLE_VARS ~ ("," ~ SINGLE_VARS)* }
+    /// Process the parameters of the function
+    fn process_params(&mut self, params : Pair<Rule>) -> Result<(), String> {
+        //* Process each SINGLE_VAR that exists in parameters */
+        for variable in params.into_inner() {
+            match variable.as_rule() {
+                Rule::SINGLE_VARS => {
+                    //* Traverse for each variable, its ID and TYPE  */
+                    // Handle: SINGLE_VARS = { ID ~ ":" ~ TYPE}
+                    let mut children = variable.into_inner();
+                    let var_name = children.next().unwrap().as_str();
+                    let var_type = children.next().unwrap().as_str();
+                    self.directory.add_variable_to_function(&self.current_func, var_name, var_type)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 
     /// Processes this single argument: MULT_VARS = {ID ~ ("," ~ ID)* ~ ":" ~ TYPE ~ ";"}
     fn process_vars(&mut self, vars : Pair<Rule>, func_name : &str) -> Result<(), String> {
@@ -401,7 +407,7 @@ mod tests {
             vars
                 x, y : entero;
                 z : flotante;
-            flotante function1(id1:entero, sincero:flotante, hola:entero){
+            flotante function1(id1:entero, sincero:flotante, hola:entero, asignacion : entero, true:entero){
                 vars
                     var1, x,y : flotante;
                 {
@@ -434,6 +440,7 @@ mod tests {
             programa miPrograma;
             vars
                 x, y : entero;
+                true : entero;
             flotante function1(id1:entero, sincero:flotante, hola:entero){
                 vars
                     var : flotante;
@@ -454,6 +461,14 @@ mod tests {
         programa miPrograma;
             vars
                 x, y : entero;
+            flotante function1(true:entero){
+                vars
+                    x : entero;
+                {
+                    y = x + true;
+                    mientras(true) haz {escribe('hola');};
+                }
+            };
             inicio
             { 
                 x = (x + 2)*3/(4+7/9);
@@ -545,6 +560,8 @@ mod tests {
             ("id1".to_string(), VarEntry::new(ENTERO_TYPE, "")),
             ("sincero".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
             ("hola".to_string(), VarEntry::new(ENTERO_TYPE, "")),
+            ("asignacion".to_string(), VarEntry::new(ENTERO_TYPE, "")),
+            ("true".to_string(), VarEntry::new(ENTERO_TYPE, "")),
             ("var1".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
             ("x".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
             ("y".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
