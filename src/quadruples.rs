@@ -1,5 +1,4 @@
-
-use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, EQUAL, GOTOF, GOTO}};
+use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, ASSIGN, GOTOF, GOTO}};
 use std::{collections::HashMap};
 
 #[derive(Debug, PartialEq)]
@@ -49,7 +48,7 @@ impl Quadruples {
         let left = self.stack_vars.pop().unwrap();
         let op = self.stack_op.pop().unwrap();
 
-        if op == EQUAL {
+        if op == ASSIGN {
 
             // Validate if both variables have the same type
             if right.1 != left.1 {
@@ -57,7 +56,7 @@ impl Quadruples {
             }
 
             // Add the quadruple of assigning operator
-            self.quads.push(Quad::new(EQUAL.to_string(), right.0, "".to_string(), left.0));
+            self.quads.push(Quad::new(ASSIGN.to_string(), right.0, "".to_string(), left.0));
             return Ok(());
         }
 
@@ -129,7 +128,7 @@ impl Quadruples {
     pub fn push_op(&mut self, op: String) { self.stack_op.push(op); }
 
     /// Saves a jump in the last part of the array
-    fn push_jump(&mut self) { 
+    pub fn push_jump(&mut self) {
         self.stack_jump.push(self.quads.len()) 
     }
 
@@ -149,6 +148,15 @@ impl Quadruples {
         self.quads.push(Quad { operator: GOTO.to_string(), left: "".to_string(), right: "".to_string(), result: "".to_string() }); // Add the goto
         self.update_gotox(); // update the current GotoF pending
         self.stack_jump.push(goto_index); // Creates a checkpoint saying that this needs to be revisited (use goto_index because push_jump would use one more than current one)
+    }
+
+    /// Manage the final goto that exists at the end of the while
+    pub fn add_goto_while(&mut self) {
+        let gotof_indx = self.stack_jump.pop().unwrap(); // gotoF of the while
+        let expression_indx = self.stack_jump.pop().unwrap(); // where the expression of while starts
+
+        self.quads.push(Quad { operator: GOTO.to_string(), left: "".to_string(), right: "".to_string(), result: format!("{}", expression_indx) });
+        self.quads[gotof_indx].result = format!("{}", self.quads.len());
     }
 
     pub fn pop_op(&mut self) { self.stack_op.pop(); }

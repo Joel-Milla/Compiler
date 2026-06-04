@@ -2,7 +2,7 @@ use pest::iterators::{Pair, Pairs};
 
 use crate::{directory::DirFunc};
 use crate::{quadruples::Quadruples};
-use crate::constants::{DIV, ENTERO_TYPE, EQUAL, PARENTHESIS, FLOTANTE_TYPE, GLOBAL, MULTP, NULA_TYPE, PLUS, SUBS, LESS, MORE, SAME, NOT_SAME};
+use crate::constants::{DIV, ENTERO_TYPE, ASSIGN, PARENTHESIS, FLOTANTE_TYPE, GLOBAL, MULTP, NULA_TYPE, PLUS, SUBS, LESS, MORE, EQUAL, NOT_EQUAL};
 
 use pest::Parser;
 use pest_derive::Parser;
@@ -56,7 +56,7 @@ impl Compiler {
                     Rule::BODY => {
                         //* Process the body by going to its child and passing 'ESTATUTO' */
                         self.quads.current_func = GLOBAL.to_string();
-                        self.process_body(program_child)?;
+                        self.handle_body(program_child)?;
                     }
                     _ => { }
                 }
@@ -67,11 +67,11 @@ impl Compiler {
 
     //* **** The next functions help traverse the tree and generate the quadruples */
     /// Process the body
-    fn process_body(&mut self, body : Pair<Rule>) -> Result<(), String> {
+    fn handle_body(&mut self, body : Pair<Rule>) -> Result<(), String> {
         for body_child in body.into_inner() {
             match body_child.as_rule() {
                 Rule::ESTATUTO => {
-                    self.process_statute(body_child)?;
+                    self.handle_statute(body_child)?;
                 },
                 _ => {}
             }
@@ -80,7 +80,7 @@ impl Compiler {
     }
 
     /// Processes the 'ESTATUTO' which are the different types of lines that exist in the program
-    fn process_statute(&mut self, statute : Pair<Rule>) -> Result<(), String> {
+    fn handle_statute(&mut self, statute : Pair<Rule>) -> Result<(), String> {
         //* Iterate over all the different types of statutes */
         for statute_child in statute.into_inner() {
             match statute_child.as_rule() {
@@ -91,11 +91,22 @@ impl Compiler {
                     // Handle rule: CONDICION = {"si" ~ "(" ~ EXPRESION ~ ")" ~ BODY ~ ("sino" ~ BODY)? ~ ";"}
                     self.handle_condition(statute_child)?;
                 },
-                Rule::CICLO => {},
+                Rule::CICLO => {
+                    //* Handle rule: CICLO = {"mientras" ~ "(" ~ EXPRESION ~ ")" ~ "haz" ~ BODY ~ ";"} */
+                    let mut cicle_children = statute_child.into_inner();
+
+                    self.quads.push_jump(); // Save in the jump stack that in here starts the while. To save where the EXPRESION starts
+                    let expression = cicle_children.next().unwrap();
+                    self.handle_expression(expression)?;
+                    self.quads.add_gotof(); // Create a gotoF with the last var of the stack, and saves it in the jump
+                    let body = cicle_children.next().unwrap();
+                    self.handle_body(body)?;
+                    self.quads.add_goto_while(); // Handles updating the gotoF and adding the goto
+                },
                 Rule::CALL => {},
                 Rule::IMPRIME => {},
                 Rule::ESTATUTO => {
-                    self.process_statute(statute_child)?;
+                    self.handle_statute(statute_child)?;
                 },
                 _ => {}
             }
@@ -113,13 +124,13 @@ impl Compiler {
 
         // Processes the body
         let body = condition_children.next().unwrap();
-        self.process_body(body)?;
+        self.handle_body(body)?;
 
         // Check if there is an else body
         match condition_children.next() {
             Some(else_body) => {
                 self.quads.add_goto_if();
-                self.process_body(else_body)?; // Process the body inside
+                self.handle_body(else_body)?; // Process the body inside
 
             },
             None => { // There is no 'ELSE' like statement}  
@@ -140,7 +151,7 @@ impl Compiler {
                     self.quads.push_var(assing_child.as_str().to_string(), var_type);
 
                     // Push the assign operator
-                    self.quads.push_op(EQUAL.to_string());
+                    self.quads.push_op(ASSIGN.to_string());
                 },
                 Rule::EXPRESION => {
                     self.handle_expression(assing_child)?;
@@ -173,7 +184,7 @@ impl Compiler {
 
         //* Flush any remaining logic operators after processing */
         while let Some(top) = self.quads.stack_op_last() {
-            if top == LESS || top == MORE || top == SAME || top == NOT_SAME {
+            if top == LESS || top == MORE || top == EQUAL || top == NOT_EQUAL {
                 self.quads.resolve()?;
             } else { break; }
         }
@@ -381,7 +392,6 @@ mod tests {
     use crate::{constants::{GOTOF}};
     use std::{collections::HashMap};
     
-// ! Claude AI helped me on knowing how to test the file
     use super::*;  // imports everything from semantic.rs
 
     fn setup_complex_program() -> Result<Compiler, String> {
@@ -453,6 +463,11 @@ mod tests {
                 } sino {
                     y = 3;
                 };
+
+                mientras (x) haz {
+                    x = 1;
+                };
+                y = 1;
             }
             fin
         ";
@@ -472,7 +487,7 @@ mod tests {
          "4".to_string(), "t3".to_string(), "t4".to_string()));
         expected_quads.quads.push(Quad::new(DIV.to_string(),
          "t2".to_string(), "t4".to_string(), "t5".to_string()));
-        expected_quads.quads.push(Quad::new(EQUAL.to_string(),
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(),
          "t5".to_string(), "".to_string(), "x".to_string()));
 
          // Build the expected quadruples for expression2
@@ -483,7 +498,7 @@ mod tests {
          "t7".to_string(), "3".to_string(), "t8".to_string()));
         expected_quads.quads.push(Quad::new(DIV.to_string(),
          "t8".to_string(), "4".to_string(), "t9".to_string()));
-        expected_quads.quads.push(Quad::new(EQUAL.to_string(),
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(),
          "t9".to_string(), "".to_string(), "y".to_string()));
 
          // Build expected quadruples for the if statement
@@ -492,9 +507,15 @@ mod tests {
         expected_quads.quads.push(Quad::new(GOTOF.to_string(),
          "t10".to_string(), "".to_string(), "16".to_string()));
         expected_quads.quads.push(Quad::new(PLUS.to_string(), "x".to_string(), "1".to_string(),  "t11".to_string()));
-        expected_quads.quads.push(Quad::new(EQUAL.to_string(), "t11".to_string(), "".to_string(),  "x".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "t11".to_string(), "".to_string(),  "x".to_string()));
         expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "17".to_string()));
-        expected_quads.quads.push(Quad::new(EQUAL.to_string(), "3".to_string(), "".to_string(),  "y".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "3".to_string(), "".to_string(),  "y".to_string()));
+
+        // Build expected quadruples for the while
+        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "x".to_string(), "".to_string(),  "20".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(), "".to_string(),  "x".to_string()));
+        expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "17".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(), "".to_string(),  "y".to_string()));
 
         assert_eq!(generated_quads.quads, expected_quads.quads);
     }
@@ -861,11 +882,11 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(EQUAL.to_string(), "1".to_string(),  "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "x".to_string()));
         expected.quads.push(Quad::new(MORE.to_string(),  "x".to_string(),  "5".to_string(), "t1".to_string()));
         expected.quads.push(Quad::new(GOTOF.to_string(), "t1".to_string(), "".to_string(),  "5".to_string()));
         expected.quads.push(Quad::new(PLUS.to_string(),  "x".to_string(),  "1".to_string(), "t2".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "t2".to_string(), "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),  "x".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -894,11 +915,11 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(EQUAL.to_string(), "2".to_string(),  "".to_string(),   "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2".to_string(),  "".to_string(),   "x".to_string()));
         expected.quads.push(Quad::new(PLUS.to_string(),  "x".to_string(),  "3".to_string(),  "t1".to_string()));
         expected.quads.push(Quad::new(LESS.to_string(),  "t1".to_string(), "10".to_string(), "t2".to_string()));
         expected.quads.push(Quad::new(GOTOF.to_string(), "t2".to_string(), "".to_string(),   "5".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "0".to_string(),  "".to_string(),   "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),   "x".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -930,12 +951,12 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(EQUAL.to_string(), "5".to_string(),  "".to_string(),  "x".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "0".to_string(),  "".to_string(),  "y".to_string()));
-        expected.quads.push(Quad::new(SAME.to_string(),  "x".to_string(),  "5".to_string(), "t1".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "5".to_string(),  "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "y".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(),  "x".to_string(),  "5".to_string(), "t1".to_string()));
         expected.quads.push(Quad::new(GOTOF.to_string(), "t1".to_string(), "".to_string(),  "6".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "1".to_string(),  "".to_string(),  "y".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "2".to_string(),  "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2".to_string(),  "".to_string(),  "x".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -964,11 +985,11 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(EQUAL.to_string(),    "7".to_string(),  "".to_string(),  "x".to_string()));
-        expected.quads.push(Quad::new(NOT_SAME.to_string(), "x".to_string(),  "0".to_string(), "t1".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "7".to_string(),  "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "x".to_string(),  "0".to_string(), "t1".to_string()));
         expected.quads.push(Quad::new(GOTOF.to_string(),    "t1".to_string(), "".to_string(),  "5".to_string()));
         expected.quads.push(Quad::new(MULTP.to_string(),    "x".to_string(),  "2".to_string(), "t2".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(),    "t2".to_string(), "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "t2".to_string(), "".to_string(),  "x".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1004,13 +1025,13 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(EQUAL.to_string(), "4".to_string(),  "".to_string(),  "x".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "0".to_string(),  "".to_string(),  "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "4".to_string(),  "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "y".to_string()));
         expected.quads.push(Quad::new(MORE.to_string(),  "x".to_string(),  "3".to_string(), "t1".to_string()));
         expected.quads.push(Quad::new(GOTOF.to_string(), "t1".to_string(), "".to_string(),  "6".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "1".to_string(),  "".to_string(),  "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "y".to_string()));
         expected.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),   "".to_string(),  "7".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "2".to_string(),  "".to_string(),  "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2".to_string(),  "".to_string(),  "y".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1046,15 +1067,15 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(EQUAL.to_string(), "1".to_string(),  "".to_string(),  "x".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "1".to_string(),  "".to_string(),  "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "y".to_string()));
         expected.quads.push(Quad::new(LESS.to_string(),  "x".to_string(),  "y".to_string(), "t1".to_string()));
         expected.quads.push(Quad::new(GOTOF.to_string(), "t1".to_string(), "".to_string(),  "7".to_string()));
         expected.quads.push(Quad::new(PLUS.to_string(),  "x".to_string(),  "y".to_string(), "t2".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "t2".to_string(), "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),  "x".to_string()));
         expected.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),   "".to_string(),  "9".to_string()));
         expected.quads.push(Quad::new(SUBS.to_string(),  "x".to_string(),  "y".to_string(), "t3".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "t3".to_string(), "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),  "x".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1089,14 +1110,14 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(EQUAL.to_string(), "6".to_string(),  "".to_string(),   "x".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "0".to_string(),  "".to_string(),   "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "6".to_string(),  "".to_string(),   "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),   "y".to_string()));
         expected.quads.push(Quad::new(MULTP.to_string(), "x".to_string(),  "2".to_string(),  "t1".to_string()));
-        expected.quads.push(Quad::new(SAME.to_string(),  "t1".to_string(), "12".to_string(), "t2".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(),  "t1".to_string(), "12".to_string(), "t2".to_string()));
         expected.quads.push(Quad::new(GOTOF.to_string(), "t2".to_string(), "".to_string(),   "7".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "1".to_string(),  "".to_string(),   "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),   "y".to_string()));
         expected.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),   "".to_string(),   "8".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(), "0".to_string(),  "".to_string(),   "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),   "y".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1132,15 +1153,15 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(EQUAL.to_string(),    "3".to_string(),   "".to_string(),   "x".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(),    "5".to_string(),   "".to_string(),   "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "3".to_string(),   "".to_string(),   "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "5".to_string(),   "".to_string(),   "y".to_string()));
         expected.quads.push(Quad::new(PLUS.to_string(),     "x".to_string(),   "1".to_string(),  "t1".to_string()));
         expected.quads.push(Quad::new(SUBS.to_string(),     "y".to_string(),   "1".to_string(),  "t2".to_string()));
-        expected.quads.push(Quad::new(NOT_SAME.to_string(), "t1".to_string(),  "t2".to_string(), "t3".to_string()));
+        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "t1".to_string(),  "t2".to_string(), "t3".to_string()));
         expected.quads.push(Quad::new(GOTOF.to_string(),    "t3".to_string(),  "".to_string(),   "8".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(),    "100".to_string(), "".to_string(),   "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "100".to_string(), "".to_string(),   "x".to_string()));
         expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),    "".to_string(),   "9".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(),    "200".to_string(), "".to_string(),   "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "200".to_string(), "".to_string(),   "x".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1184,16 +1205,16 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(EQUAL.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
-        expected.quads.push(Quad::new(EQUAL.to_string(), "0".to_string(),  "".to_string(),  "y".to_string()));  // 1
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "y".to_string()));  // 1
         expected.quads.push(Quad::new(LESS.to_string(),  "x".to_string(),  "1".to_string(), "t1".to_string())); // 2
         expected.quads.push(Quad::new(GOTOF.to_string(), "t1".to_string(), "".to_string(),  "5".to_string()));  // 3
-        expected.quads.push(Quad::new(EQUAL.to_string(), "1".to_string(),  "".to_string(),  "x".to_string()));  // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "x".to_string()));  // 4
         expected.quads.push(Quad::new(MORE.to_string(),  "y".to_string(),  "2".to_string(), "t2".to_string())); // 5
         expected.quads.push(Quad::new(GOTOF.to_string(), "t2".to_string(), "".to_string(),  "9".to_string()));  // 6
-        expected.quads.push(Quad::new(EQUAL.to_string(), "9".to_string(),  "".to_string(),  "y".to_string()));  // 7
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "9".to_string(),  "".to_string(),  "y".to_string()));  // 7
         expected.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),   "".to_string(),  "10".to_string())); // 8
-        expected.quads.push(Quad::new(EQUAL.to_string(), "8".to_string(),  "".to_string(),  "y".to_string()));  // 9
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "8".to_string(),  "".to_string(),  "y".to_string()));  // 9
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1235,16 +1256,242 @@ mod tests {
         let mut expected = Quadruples::new();
         expected.quads.push(Quad::new(PLUS.to_string(),  "1".to_string(),  "2".to_string(),  "t1".to_string())); // 0
         expected.quads.push(Quad::new(MULTP.to_string(), "t1".to_string(), "3".to_string(),  "t2".to_string())); // 1
-        expected.quads.push(Quad::new(EQUAL.to_string(), "t2".to_string(), "".to_string(),   "x".to_string()));  // 2
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),   "x".to_string()));  // 2
         expected.quads.push(Quad::new(SUBS.to_string(),  "x".to_string(),  "4".to_string(),  "t3".to_string())); // 3
-        expected.quads.push(Quad::new(EQUAL.to_string(), "t3".to_string(), "".to_string(),   "y".to_string()));  // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),   "y".to_string()));  // 4
         expected.quads.push(Quad::new(MORE.to_string(),  "x".to_string(),  "y".to_string(),  "t4".to_string())); // 5
         expected.quads.push(Quad::new(GOTOF.to_string(), "t4".to_string(), "".to_string(),   "10".to_string())); // 6
         expected.quads.push(Quad::new(PLUS.to_string(),  "x".to_string(),  "y".to_string(),  "t5".to_string())); // 7
-        expected.quads.push(Quad::new(EQUAL.to_string(), "t5".to_string(), "".to_string(),   "x".to_string()));  // 8
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t5".to_string(), "".to_string(),   "x".to_string()));  // 8
         expected.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),   "".to_string(),   "12".to_string())); // 9
         expected.quads.push(Quad::new(MULTP.to_string(), "x".to_string(),  "2".to_string(),  "t6".to_string())); // 10
-        expected.quads.push(Quad::new(EQUAL.to_string(), "t6".to_string(), "".to_string(),   "y".to_string()));  // 11
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t6".to_string(), "".to_string(),   "y".to_string()));  // 11
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_while_simple() {
+        // x = 0;
+        // mientras (x < 5) haz { x = x + 1; };
+        // idx: 0 = 0 _ x
+        //      1 < x 5 t1        (loop start = 1)
+        //      2 GOTOF t1 _ 6    (false → exit past loop)
+        //      3 + x 1 t2
+        //      4 = t2 _ x
+        //      5 GOTO _ _ 1      (back to condition)
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio {
+                x = 0;
+                mientras (x < 5) haz {
+                    x = x + 1;
+                };
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
+        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "5".to_string(), "t1".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "6".to_string()));  // 2
+        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "1".to_string(), "t2".to_string())); // 3
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),  "x".to_string()));  // 4
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "1".to_string()));  // 5
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_while_big_body() {
+        // x = 0; y = 0;
+        // mientras (x < 10) haz { x = x + 1; y = y + x; };
+        // idx: 0 = 0 _ x
+        //      1 = 0 _ y
+        //      2 < x 10 t1       (loop start = 2)
+        //      3 GOTOF t1 _ 9
+        //      4 + x 1 t2
+        //      5 = t2 _ x
+        //      6 + y x t3
+        //      7 = t3 _ y
+        //      8 GOTO _ _ 2
+        let program = "
+            programa test;
+            vars x, y : entero;
+            inicio {
+                x = 0;
+                y = 0;
+                mientras (x < 10) haz {
+                    x = x + 1;
+                    y = y + x;
+                };
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),   "x".to_string()));  // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),   "y".to_string()));  // 1
+        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "10".to_string(), "t1".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),   "9".to_string()));  // 3
+        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "1".to_string(),  "t2".to_string())); // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),   "x".to_string()));  // 5
+        expected.quads.push(Quad::new(PLUS.to_string(),   "y".to_string(),  "x".to_string(),  "t3".to_string())); // 6
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),   "y".to_string()));  // 7
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),   "2".to_string()));  // 8
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_while_inside_if() {
+        // x = 0;
+        // si (x < 3) { mientras (x < 2) haz { x = x + 1; }; };
+        // idx: 0 = 0 _ x
+        //      1 < x 3 t1        (if condition)
+        //      2 GOTOF t1 _ 8    (if false → past if-body, which is the whole while)
+        //      3 < x 2 t2        (while condition, loop start = 3)
+        //      4 GOTOF t2 _ 8    (while false → exit past loop)
+        //      5 + x 1 t3
+        //      6 = t3 _ x
+        //      7 GOTO _ _ 3      (while back to condition)
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio {
+                x = 0;
+                si (x < 3) {
+                    mientras (x < 2) haz {
+                        x = x + 1;
+                    };
+                };
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
+        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "3".to_string(), "t1".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "8".to_string()));  // 2
+        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "2".to_string(), "t2".to_string())); // 3
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t2".to_string(), "".to_string(),  "8".to_string()));  // 4
+        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "1".to_string(), "t3".to_string())); // 5
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),  "x".to_string()));  // 6
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "3".to_string()));  // 7
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_if_else_inside_while() {
+        // x = 0;
+        // mientras (x < 4) haz {
+        //     si (x == 2) { x = x + 10; } sino { x = x + 1; };
+        // };
+        // idx: 0 = 0 _ x
+        //      1 < x 4 t1        (while condition, loop start = 1)
+        //      2 GOTOF t1 _ 11   (while exit)
+        //      3 == x 2 t2       (if condition)
+        //      4 GOTOF t2 _ 8    (if false → else at 8)
+        //      5 + x 10 t3       (if body)
+        //      6 = t3 _ x
+        //      7 GOTO _ _ 10     (skip else → end of if/else = 10)
+        //      8 + x 1 t4        (else body)
+        //      9 = t4 _ x
+        //     10 GOTO _ _ 1      (while back-edge)
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio {
+                x = 0;
+                mientras (x < 4) haz {
+                    si (x == 2) {
+                        x = x + 10;
+                    } sino {
+                        x = x + 1;
+                    };
+                };
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
+        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "4".to_string(), "t1".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "11".to_string())); // 2
+        expected.quads.push(Quad::new(EQUAL.to_string(),   "x".to_string(),  "2".to_string(), "t2".to_string())); // 3
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t2".to_string(), "".to_string(),  "8".to_string()));  // 4
+        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "10".to_string(),"t3".to_string())); // 5
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),  "x".to_string()));  // 6
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "10".to_string())); // 7
+        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "1".to_string(), "t4".to_string())); // 8
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t4".to_string(), "".to_string(),  "x".to_string()));  // 9
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "1".to_string()));  // 10
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_two_sequential_whiles() {
+        // x = 0; y = 0;
+        // mientras (x < 2) haz { x = x + 1; };
+        // mientras (y != 3) haz { y = y + 1; };
+        // x = 99;
+        // idx: 0 = 0 _ x
+        //      1 = 0 _ y
+        //      2 < x 2 t1        (while1 start = 2)
+        //      3 GOTOF t1 _ 7
+        //      4 + x 1 t2
+        //      5 = t2 _ x
+        //      6 GOTO _ _ 2
+        //      7 != y 3 t3       (while2 start = 7)
+        //      8 GOTOF t3 _ 12
+        //      9 + y 1 t4
+        //     10 = t4 _ y
+        //     11 GOTO _ _ 7
+        //     12 = 99 _ x
+        let program = "
+            programa test;
+            vars x, y : entero;
+            inicio {
+                x = 0;
+                y = 0;
+                mientras (x < 2) haz {
+                    x = x + 1;
+                };
+                mientras (y != 3) haz {
+                    y = y + 1;
+                };
+                x = 99;
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(ASSIGN.to_string(),   "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(),   "0".to_string(),  "".to_string(),  "y".to_string()));  // 1
+        expected.quads.push(Quad::new(LESS.to_string(),     "x".to_string(),  "2".to_string(), "t1".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),    "t1".to_string(), "".to_string(),  "7".to_string()));  // 3
+        expected.quads.push(Quad::new(PLUS.to_string(),     "x".to_string(),  "1".to_string(), "t2".to_string())); // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(),   "t2".to_string(), "".to_string(),  "x".to_string()));  // 5
+        expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),   "".to_string(),  "2".to_string()));  // 6
+        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "y".to_string(),  "3".to_string(), "t3".to_string())); // 7
+        expected.quads.push(Quad::new(GOTOF.to_string(),    "t3".to_string(), "".to_string(),  "12".to_string())); // 8
+        expected.quads.push(Quad::new(PLUS.to_string(),     "y".to_string(),  "1".to_string(), "t4".to_string())); // 9
+        expected.quads.push(Quad::new(ASSIGN.to_string(),   "t4".to_string(), "".to_string(),  "y".to_string()));  // 10
+        expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),   "".to_string(),  "7".to_string()));  // 11
+        expected.quads.push(Quad::new(ASSIGN.to_string(),   "99".to_string(), "".to_string(),  "x".to_string()));  // 12
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }

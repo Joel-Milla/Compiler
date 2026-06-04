@@ -10,7 +10,7 @@ pub const DIV : &str = "/";
 pub const LESS : &str = "<";
 pub const MORE : &str = ">";
 pub const EQUAL : &str = "==";
-pub const NOT_SAME : &str = "!=";
+pub const NOT_EQUAL : &str = "!=";
 pub const ASSIGN : &str = "=";
 pub const PARENTHESIS : &str = "(";
 
