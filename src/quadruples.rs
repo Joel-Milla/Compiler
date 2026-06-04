@@ -1,5 +1,5 @@
 
-use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, EQUAL, FAKE_BOTTOM}};
+use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, EQUAL, FAKE_BOTTOM, GOTOF, GOTO}};
 use std::{collections::HashMap};
 
 #[derive(Debug, PartialEq)]
@@ -23,6 +23,7 @@ pub struct Quadruples {
     pub quads : Vec<Quad>, // Were all the quadruples are storesd
     stack_vars : Vec<(String, String)>, // (name, type) of the variable
     stack_op : Vec<String>, // Stack to save the operators
+    stack_jump : Vec<usize>,
     pub current_func : String,
     pub temp_count : usize
 }
@@ -33,6 +34,7 @@ impl Quadruples {
             quads : Vec::new(),
             stack_vars : Vec::new(),
             stack_op : Vec::new(),
+            stack_jump : Vec::new(),
             current_func : "".to_string(),
             temp_count : 0,
         }
@@ -75,6 +77,7 @@ impl Quadruples {
         return format!("t{}", self.temp_count)
     }
 
+    /// Semantic cube: given two types and an operation, returns the resulting operation
     pub fn obtain_type(left_type : &str, right_type : &str, operand : &str) -> Result<String, String> {
         let type_index: HashMap<&str, usize> = HashMap::from([
         (ENTERO_TYPE,   0),
@@ -124,6 +127,29 @@ impl Quadruples {
     pub fn push_var(&mut self, name: String, var_type: String) { self.stack_vars.push((name, var_type)); }
 
     pub fn push_op(&mut self, op: String) { self.stack_op.push(op); }
+
+    /// Saves a jump in the last part of the array
+    fn push_jump(&mut self) { 
+        self.stack_jump.push(self.quads.len()) 
+    }
+
+    pub fn add_gotof(&mut self) {
+        self.push_jump(); // Creates a checkpoint saying that this needs to be revisited
+        let condition_result = self.stack_vars.pop().unwrap();
+        self.quads.push(Quad { operator: GOTOF.to_string(), left: condition_result.0, right: "".to_string(), result: "".to_string() });
+    }
+
+    pub fn update_gotox(&mut self) {
+        let jump_indx = self.stack_jump.pop().unwrap();
+        self.quads[jump_indx].result = format!("{}", self.quads.len());
+    }
+
+    pub fn add_goto_if(&mut self) {
+        let goto_index = self.quads.len();
+        self.quads.push(Quad { operator: GOTO.to_string(), left: "".to_string(), right: "".to_string(), result: "".to_string() }); // Add the goto
+        self.update_gotox(); // update the current GotoF pending
+        self.stack_jump.push(goto_index); // Creates a checkpoint saying that this needs to be revisited (use goto_index because push_jump would use one more than current one)
+    }
 
     pub fn pop_op(&mut self) { self.stack_op.pop(); }
 

@@ -13,3 +13,6 @@ pub const LESS_THAN : &str = "<=";
 pub const MORE_THAN : &str = ">=";
 pub const EQUAL : &str = "=";
 pub const FAKE_BOTTOM : &str = "(";
+
+pub const GOTOF : &str = "GOTO_F";
+pub const GOTO : &str = "GOTO";

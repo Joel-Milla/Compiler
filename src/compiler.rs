@@ -56,14 +56,7 @@ impl Compiler {
                     Rule::BODY => {
                         //* Process the body by going to its child and passing 'ESTATUTO' */
                         self.quads.current_func = GLOBAL.to_string();
-                        for body_child in program_child.into_inner() {
-                            match body_child.as_rule() {
-                                Rule::ESTATUTO => {
-                                    self.process_statute(body_child)?;
-                                },
-                                _ => {}
-                            }
-                        }
+                        self.process_body(program_child)?;
                     }
                     _ => { }
                 }
@@ -73,6 +66,19 @@ impl Compiler {
     }
 
     //* **** The next functions help traverse the tree and generate the quadruples */
+    /// Process the body
+    fn process_body(&mut self, body : Pair<Rule>) -> Result<(), String> {
+        for body_child in body.into_inner() {
+            match body_child.as_rule() {
+                Rule::ESTATUTO => {
+                    self.process_statute(body_child)?;
+                },
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Processes the 'ESTATUTO' which are the different types of lines that exist in the program
     fn process_statute(&mut self, statute : Pair<Rule>) -> Result<(), String> {
         //* Iterate over all the different types of statutes */
@@ -81,14 +87,45 @@ impl Compiler {
                 Rule::ASIGNA => {
                     self.handle_assign(statute_child)?;
                 },
-                Rule::CONDICION => {},
+                Rule::CONDICION => {
+                    // Handle rule: CONDICION = {"si" ~ "(" ~ EXPRESION ~ ")" ~ BODY ~ ("sino" ~ BODY)? ~ ";"}
+                    self.handle_condition(statute_child)?;
+                },
                 Rule::CICLO => {},
                 Rule::CALL => {},
                 Rule::IMPRIME => {},
-                Rule::ESTATUTO => {},
+                Rule::ESTATUTO => {
+                    self.process_statute(statute_child)?;
+                },
                 _ => {}
             }
         }
+        Ok(())
+    }
+
+    /// Handle rule: CONDICION = {"si" ~ "(" ~ EXPRESION ~ ")" ~ BODY ~ ("sino" ~ BODY)? ~ ";"}
+    pub fn handle_condition(&mut self, condition : Pair<Rule>) -> Result<(), String> {
+        let mut condition_children = condition.into_inner();
+
+        let expression = condition_children.next().unwrap();
+        self.handle_expression(expression)?;
+        self.quads.add_gotof(); // After checking expression, add the false that needs to be checked
+
+        // Processes the body
+        let body = condition_children.next().unwrap();
+        self.process_body(body)?;
+
+        // Check if there is an else body
+        match condition_children.next() {
+            Some(else_body) => {
+                self.quads.add_goto_if();
+                self.process_body(else_body)?; // Process the body inside
+
+            },
+            None => { // There is no 'ELSE' like statement}  
+            }
+        }
+        self.quads.update_gotox(); // Process the goto or gotoF. Depending on previous match
         Ok(())
     }
 
@@ -329,7 +366,8 @@ impl Compiler {
 //* Following Rust convention of adding tests inside file tested */
 #[cfg(test)]
 mod tests {
-    use crate::{directory::{FuncEntry, VarEntry}, quadruples::Quad};
+    use crate::{constants::GOTO, directory::{FuncEntry, VarEntry}, quadruples::Quad};
+    use crate::{constants::{GOTOF}};
     use std::{collections::HashMap};
     
 // ! Claude AI helped me on knowing how to test the file
@@ -399,6 +437,11 @@ mod tests {
             { 
                 x = (x + 2)*3/(4+7/9);
                 y = (((y+x) - y)*3)/4;
+                si (x) {
+                    x = x + 1;
+                } sino {
+                    y = 3;
+                };
             }
             fin
         ";
@@ -431,6 +474,14 @@ mod tests {
          "t8".to_string(), "4".to_string(), "t9".to_string()));
         expected_quads.quads.push(Quad::new(EQUAL.to_string(),
          "t9".to_string(), "".to_string(), "y".to_string()));
+
+         // Build expected quadruples for the if statement
+        expected_quads.quads.push(Quad::new(GOTOF.to_string(),
+         "x".to_string(), "".to_string(), "15".to_string()));
+        expected_quads.quads.push(Quad::new(PLUS.to_string(), "x".to_string(), "1".to_string(),  "t10".to_string()));
+        expected_quads.quads.push(Quad::new(EQUAL.to_string(), "t10".to_string(), "".to_string(),  "x".to_string()));
+        expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "16".to_string()));
+        expected_quads.quads.push(Quad::new(EQUAL.to_string(), "3".to_string(), "".to_string(),  "y".to_string()));
 
         assert_eq!(generated_quads.quads, expected_quads.quads);
     }
