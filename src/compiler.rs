@@ -14,7 +14,6 @@ pub struct CSVParser;
 pub struct Compiler {
     pub directory : DirFunc,
     pub quads : Quadruples,
-    pub current_func : String,
 }
 
 impl Compiler {
@@ -32,7 +31,6 @@ impl Compiler {
         Compiler {
             directory : DirFunc::new(),
             quads : Quadruples::new(),
-            current_func : String::new(),
         }
     }
 
@@ -57,7 +55,7 @@ impl Compiler {
                     },
                     Rule::BODY => {
                         //* Process the body by going to its child and passing 'ESTATUTO' */
-                        self.current_func = GLOBAL.to_string();
+                        self.quads.set_scope_to(GLOBAL);
                         self.handle_body(program_child)?;
                     }
                     _ => { }
@@ -149,7 +147,7 @@ impl Compiler {
             match assing_child.as_rule() {
                 Rule::ID => {
                     // Save the assign in the stack
-                    let var_type = self.directory.get_var_type_of(&self.current_func, assing_child.as_str())?;
+                    let var_type = self.directory.get_var_type_of(self.quads.get_scope(), assing_child.as_str())?;
                     self.quads.push_var(assing_child.as_str().to_string(), var_type);
 
                     // Push the assign operator
@@ -296,7 +294,7 @@ impl Compiler {
         let mut var_type : String = "".to_string();
         match term.as_rule() {
             Rule::ID => {
-                var_type = self.directory.get_var_type_of(&self.current_func, term.as_str())?;
+                var_type = self.directory.get_var_type_of(self.quads.get_scope(), term.as_str())?;
 
             },
             Rule::CTE => {
@@ -329,7 +327,7 @@ impl Compiler {
                 Rule::ID => {
                     function_name = func_child.as_str();
                     self.directory.create_function(function_name, funct_type)?; // create the function in directory
-                    self.current_func = function_name.to_string();
+                    self.quads.set_scope_to(function_name);
                 }
                 Rule::PARAMETERS => {
                     //* Process each SINGLE_VAR that exists in parameters */
@@ -359,7 +357,7 @@ impl Compiler {
                     let mut children = variable.into_inner();
                     let var_name = children.next().unwrap().as_str();
                     let var_type = children.next().unwrap().as_str();
-                    self.directory.add_variable_to_function(&self.current_func, var_name, var_type)?;
+                    self.directory.add_variable_to_function(&self.quads.get_scope(), var_name, var_type)?;
                 }
                 _ => {}
             }
@@ -466,7 +464,7 @@ mod tests {
                     x : entero;
                 {
                     y = x + true;
-                    mientras(true) haz {escribe('hola');};
+                    mientras(true) haz {x=1;};
                 }
             };
             inicio
@@ -490,9 +488,16 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let generated_quads = compiler.quads;
-
-        // Build the expected quadruples for expression1
         let mut expected_quads : Quadruples = Quadruples::new();
+
+        // Build the expected quadruples for function1
+        expected_quads.quads.push(Quad::new(PLUS.to_string(), "x".to_string(), "true".to_string(),  "t1".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "t1".to_string(), "".to_string(),  "y".to_string()));
+        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "true".to_string(), "".to_string(),  "5".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(), "".to_string(),  "x".to_string()));
+        expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "2".to_string()));
+
+        // Build the expected quadruples for MAIN
         expected_quads.quads.push(Quad::new(PLUS.to_string(), "x".to_string(), "2".to_string(),  "t1".to_string()));
         expected_quads.quads.push(Quad::new(MULTP.to_string(),
          "t1".to_string(), "3".to_string(), "t2".to_string()));
@@ -520,16 +525,16 @@ mod tests {
          expected_quads.quads.push(Quad::new(MORE.to_string(),
          "x".to_string(), "y".to_string(), "t10".to_string()));
         expected_quads.quads.push(Quad::new(GOTOF.to_string(),
-         "t10".to_string(), "".to_string(), "16".to_string()));
+         "t10".to_string(), "".to_string(), "21".to_string()));
         expected_quads.quads.push(Quad::new(PLUS.to_string(), "x".to_string(), "1".to_string(),  "t11".to_string()));
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "t11".to_string(), "".to_string(),  "x".to_string()));
-        expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "17".to_string()));
+        expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "22".to_string()));
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "3".to_string(), "".to_string(),  "y".to_string()));
 
         // Build expected quadruples for the while
-        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "x".to_string(), "".to_string(),  "20".to_string()));
+        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "x".to_string(), "".to_string(),  "25".to_string()));
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(), "".to_string(),  "x".to_string()));
-        expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "17".to_string()));
+        expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "22".to_string()));
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(), "".to_string(),  "y".to_string()));
 
         assert_eq!(generated_quads.quads, expected_quads.quads);
@@ -1509,6 +1514,299 @@ mod tests {
         expected.quads.push(Quad::new(ASSIGN.to_string(),   "t4".to_string(), "".to_string(),  "y".to_string()));  // 10
         expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),   "".to_string(),  "7".to_string()));  // 11
         expected.quads.push(Quad::new(ASSIGN.to_string(),   "99".to_string(), "".to_string(),  "x".to_string()));  // 12
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    // --- Multiple functions in one program ---
+    // The quads vector is shared and indices are CONTINUOUS across functions
+    // and then main (functions are processed first, in source order, then 'inicio').
+    // BUT each function (and main) RESETS its temporals to t1 (set_scope_to),
+    // exactly as seen in class: every scope has its own t1..tn.
+
+    #[test]
+    fn test_quad_one_function_with_if_then_main() {
+        // nula f(a:entero){ vars b:entero; { b = a + 1; si (b > 0) { b = b - 1; }; } }
+        // inicio { x = 5; }
+        //
+        // f (indices 0.., temps t1..):
+        //   0 + a 1 t1
+        //   1 = t1 _ b
+        //   2 > b 0 t2
+        //   3 GOTOF t2 _ 6     (no else → skip if-body)
+        //   4 - b 1 t3
+        //   5 = t3 _ b
+        // main (indices continue at 6, temps reset to t1):
+        //   6 = 5 _ x
+        let program = "
+            programa test;
+            vars x : entero;
+            nula f(a : entero) {
+                vars b : entero;
+                {
+                    b = a + 1;
+                    si (b > 0) {
+                        b = b - 1;
+                    };
+                }
+            };
+            inicio {
+                x = 5;
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        // f
+        expected.quads.push(Quad::new(PLUS.to_string(),   "a".to_string(),  "1".to_string(), "t1".to_string())); // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t1".to_string(), "".to_string(),  "b".to_string()));  // 1
+        expected.quads.push(Quad::new(MORE.to_string(),   "b".to_string(),  "0".to_string(), "t2".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t2".to_string(), "".to_string(),  "6".to_string()));  // 3
+        expected.quads.push(Quad::new(SUBS.to_string(),   "b".to_string(),  "1".to_string(), "t3".to_string())); // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),  "b".to_string()));  // 5
+        // main
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "5".to_string(),  "".to_string(),  "x".to_string()));  // 6
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_two_functions_each_with_loop() {
+        // nula uno(a:entero){ vars i:entero; { i = 0; mientras (i < a) haz { i = i + 1; }; } }
+        // entero dos(b:entero){ vars s:entero; { s = b * 2; } }
+        // inicio { y = 7; }
+        //
+        // uno (indices 0.., temps t1..):
+        //   0 = 0 _ i
+        //   1 < i a t1         (loop start = 1)
+        //   2 GOTOF t1 _ 6
+        //   3 + i 1 t2
+        //   4 = t2 _ i
+        //   5 GOTO _ _ 1
+        // dos (indices continue at 6, temps reset to t1):
+        //   6 * b 2 t1
+        //   7 = t1 _ s
+        // main (indices continue at 8, temps reset to t1):
+        //   8 = 7 _ y
+        let program = "
+            programa test;
+            vars y : entero;
+            nula uno(a : entero) {
+                vars i : entero;
+                {
+                    i = 0;
+                    mientras (i < a) haz {
+                        i = i + 1;
+                    };
+                }
+            };
+            entero dos(b : entero) {
+                vars s : entero;
+                {
+                    s = b * 2;
+                }
+            };
+            inicio {
+                y = 7;
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        // uno
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "i".to_string()));  // 0
+        expected.quads.push(Quad::new(LESS.to_string(),   "i".to_string(),  "a".to_string(), "t1".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "6".to_string()));  // 2
+        expected.quads.push(Quad::new(PLUS.to_string(),   "i".to_string(),  "1".to_string(), "t2".to_string())); // 3
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),  "i".to_string()));  // 4
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "1".to_string()));  // 5
+        // dos (temps reset)
+        expected.quads.push(Quad::new(MULTP.to_string(),  "b".to_string(),  "2".to_string(), "t1".to_string())); // 6
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t1".to_string(), "".to_string(),  "s".to_string()));  // 7
+        // main (temps reset)
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7".to_string(),  "".to_string(),  "y".to_string()));  // 8
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_three_functions_mixed_control_flow() {
+        // nula a(p:entero){ vars r:entero; { r = p + 1; } }
+        // nula b(q:entero){ vars r:entero; { si (q == 0) { r = 1; } sino { r = 2; }; } }
+        // nula c(m:entero){ vars r:entero; { mientras (m > 0) haz { r = m; m = m - 1; }; } }
+        // inicio { x = 0; }
+        //
+        // a (indices 0.., temps t1..):
+        //   0 + p 1 t1
+        //   1 = t1 _ r
+        // b (indices continue at 2, temps reset to t1):
+        //   2 == q 0 t1
+        //   3 GOTOF t1 _ 6     (if false → else at 6)
+        //   4 = 1 _ r          (if body)
+        //   5 GOTO _ _ 7       (skip else → end 7)
+        //   6 = 2 _ r          (else body)
+        // c (indices continue at 7, temps reset to t1):
+        //   7 > m 0 t1         (loop start = 7)
+        //   8 GOTOF t1 _ 13
+        //   9 = m _ r
+        //  10 - m 1 t2
+        //  11 = t2 _ m
+        //  12 GOTO _ _ 7
+        // main (indices continue at 13, temps reset to t1):
+        //  13 = 0 _ x
+        let program = "
+            programa test;
+            vars x : entero;
+            nula a(p : entero) {
+                vars r : entero;
+                {
+                    r = p + 1;
+                }
+            };
+            nula b(q : entero) {
+                vars r : entero;
+                {
+                    si (q == 0) {
+                        r = 1;
+                    } sino {
+                        r = 2;
+                    };
+                }
+            };
+            nula c(m : entero) {
+                vars r : entero;
+                {
+                    mientras (m > 0) haz {
+                        r = m;
+                        m = m - 1;
+                    };
+                }
+            };
+            inicio {
+                x = 0;
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        // a
+        expected.quads.push(Quad::new(PLUS.to_string(),   "p".to_string(),  "1".to_string(), "t1".to_string())); // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t1".to_string(), "".to_string(),  "r".to_string()));  // 1
+        // b
+        expected.quads.push(Quad::new(EQUAL.to_string(),  "q".to_string(),  "0".to_string(), "t1".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "6".to_string()));  // 3
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "r".to_string()));  // 4
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "7".to_string()));  // 5
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2".to_string(),  "".to_string(),  "r".to_string()));  // 6
+        // c
+        expected.quads.push(Quad::new(MORE.to_string(),   "m".to_string(),  "0".to_string(), "t1".to_string())); // 7
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "13".to_string())); // 8
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "m".to_string(),  "".to_string(),  "r".to_string()));  // 9
+        expected.quads.push(Quad::new(SUBS.to_string(),   "m".to_string(),  "1".to_string(), "t2".to_string())); // 10
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),  "m".to_string()));  // 11
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "7".to_string()));  // 12
+        // main
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 13
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn test_quad_empty_function_then_main() {
+        // Edge: a function with an empty body contributes 0 quads,
+        // so main still starts at index 0 with temps at t1.
+        // nula vacia(){ { } }
+        // inicio { x = 1 + 2; }
+        //   0 + 1 2 t1
+        //   1 = t1 _ x
+        let program = "
+            programa test;
+            vars x : entero;
+            nula vacia() {
+                { }
+            };
+            inicio {
+                x = 1 + 2;
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(PLUS.to_string(),   "1".to_string(),  "2".to_string(), "t1".to_string())); // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t1".to_string(), "".to_string(),  "x".to_string()));  // 1
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_function_nested_while_in_if_then_main_loop() {
+        // Edge: while nested inside an if (in a function), then a loop in main.
+        // Verifies temps reset between the function (ends at t3) and main (restarts at t1).
+        // nula nested(n:entero){ vars k:entero; { si (n > 0) { mientras (k < n) haz { k = k + 1; }; }; } }
+        // inicio { mientras (x != 0) haz { x = x - 1; }; }
+        //
+        // nested (indices 0.., temps t1..):
+        //   0 > n 0 t1
+        //   1 GOTOF t1 _ 7     (if false → past if-body)
+        //   2 < k n t2         (while loop start = 2)
+        //   3 GOTOF t2 _ 7     (while false → exit)
+        //   4 + k 1 t3
+        //   5 = t3 _ k
+        //   6 GOTO _ _ 2
+        // main (indices continue at 7, temps reset to t1):
+        //   7 != x 0 t1        (loop start = 7)
+        //   8 GOTOF t1 _ 12
+        //   9 - x 1 t2
+        //  10 = t2 _ x
+        //  11 GOTO _ _ 7
+        let program = "
+            programa test;
+            vars x : entero;
+            nula nested(n : entero) {
+                vars k : entero;
+                {
+                    si (n > 0) {
+                        mientras (k < n) haz {
+                            k = k + 1;
+                        };
+                    };
+                }
+            };
+            inicio {
+                mientras (x != 0) haz {
+                    x = x - 1;
+                };
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        // nested
+        expected.quads.push(Quad::new(MORE.to_string(),     "n".to_string(),  "0".to_string(), "t1".to_string())); // 0
+        expected.quads.push(Quad::new(GOTOF.to_string(),    "t1".to_string(), "".to_string(),  "7".to_string()));  // 1
+        expected.quads.push(Quad::new(LESS.to_string(),     "k".to_string(),  "n".to_string(), "t2".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),    "t2".to_string(), "".to_string(),  "7".to_string()));  // 3
+        expected.quads.push(Quad::new(PLUS.to_string(),     "k".to_string(),  "1".to_string(), "t3".to_string())); // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(),   "t3".to_string(), "".to_string(),  "k".to_string()));  // 5
+        expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),   "".to_string(),  "2".to_string()));  // 6
+        // main (temps reset)
+        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "x".to_string(),  "0".to_string(), "t1".to_string())); // 7
+        expected.quads.push(Quad::new(GOTOF.to_string(),    "t1".to_string(), "".to_string(),  "12".to_string())); // 8
+        expected.quads.push(Quad::new(SUBS.to_string(),     "x".to_string(),  "1".to_string(), "t2".to_string())); // 9
+        expected.quads.push(Quad::new(ASSIGN.to_string(),   "t2".to_string(), "".to_string(),  "x".to_string()));  // 10
+        expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),   "".to_string(),  "7".to_string()));  // 11
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }

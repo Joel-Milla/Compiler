@@ -6,7 +6,7 @@ pub struct Quad {
     operator : String,
     left : String,
     right : String,
-    result : String
+    result : String,
 }
 
 impl Quad {
@@ -23,7 +23,8 @@ pub struct Quadruples {
     stack_vars : Vec<(String, String)>, // (name, type) of the variable
     stack_op : Vec<String>, // Stack to save the operators
     stack_jump : Vec<usize>,
-    pub temp_count : usize
+    temp_count : usize,
+    curr_scope : String,
 }
 
 impl Quadruples {
@@ -34,6 +35,7 @@ impl Quadruples {
             stack_op : Vec::new(),
             stack_jump : Vec::new(),
             temp_count : 0,
+            curr_scope : String::new(),
         }
     }
 
@@ -69,7 +71,7 @@ impl Quadruples {
     }
 
     /// Generates a new temporal variable based on a counter
-    pub fn new_temp(&mut self) -> String {
+    fn new_temp(&mut self) -> String {
         self.temp_count += 1;
         return format!("t{}", self.temp_count)
     }
@@ -161,5 +163,13 @@ impl Quadruples {
 
     pub fn stack_op_last(&self) -> Option<&String> {
         self.stack_op.last()
+    }
+
+    pub fn get_scope(&self) -> &str {
+        return &self.curr_scope;
+    }
+    pub fn set_scope_to(&mut self, scope : &str) {
+        self.curr_scope = scope.to_string();
+        self.temp_count = 0;
     }
 }
