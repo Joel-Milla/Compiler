@@ -9,9 +9,9 @@ pub const MULTP : &str = "*";
 pub const DIV : &str = "/";
 pub const LESS : &str = "<";
 pub const MORE : &str = ">";
-pub const SAME : &str = "==";
+pub const EQUAL : &str = "==";
 pub const NOT_SAME : &str = "!=";
-pub const EQUAL : &str = "=";
+pub const ASSIGN : &str = "=";
 pub const PARENTHESIS : &str = "(";
 
 pub const GOTOF : &str = "GOTO_F";
