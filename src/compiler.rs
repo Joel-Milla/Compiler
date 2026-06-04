@@ -770,4 +770,214 @@ mod tests {
     }
 
     // ! Following functions tests that the quadruple are being created correctly
+
+    // --- Edge cases ---
+
+    #[test]
+    fn test_quad_single_constant() {
+        // x = 1;  →  = 1 → x
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio { x = 1; }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(EQUAL.to_string(), "1".to_string(), "".to_string(), "x".to_string()));
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_single_variable() {
+        // x = y;  →  = y → x
+        let program = "
+            programa test;
+            vars x, y : entero;
+            inicio { x = y; }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(EQUAL.to_string(), "y".to_string(), "".to_string(), "x".to_string()));
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_left_associative_addition() {
+        // x = 1 + 2 + 3;  →  1+2=t1, t1+3=t2, = t2 → x
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio { x = 1 + 2 + 3; }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(PLUS.to_string(),  "1".to_string(),  "2".to_string(),  "t1".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),  "t1".to_string(), "3".to_string(),  "t2".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(), "t2".to_string(), "".to_string(),   "x".to_string()));
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_mult_before_add_left() {
+        // x = 2 * 3 + 4;  →  2*3=t1, t1+4=t2, = t2 → x
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio { x = 2 * 3 + 4; }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(MULTP.to_string(), "2".to_string(),  "3".to_string(),  "t1".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),  "t1".to_string(), "4".to_string(),  "t2".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(), "t2".to_string(), "".to_string(),   "x".to_string()));
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_mult_before_add_right() {
+        // x = 4 + 2 * 3;  →  2*3=t1, 4+t1=t2, = t2 → x
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio { x = 4 + 2 * 3; }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(MULTP.to_string(), "2".to_string(),  "3".to_string(),  "t1".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),  "4".to_string(),  "t1".to_string(), "t2".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(), "t2".to_string(), "".to_string(),   "x".to_string()));
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    // --- Heavy parentheses and multiple assignments ---
+
+    #[test]
+    fn test_quad_double_nested_parens() {
+        // x = ((2 + 3));  →  2+3=t1, = t1 → x
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio { x = ((2 + 3)); }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(PLUS.to_string(),  "2".to_string(),  "3".to_string(),  "t1".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(), "t1".to_string(), "".to_string(),   "x".to_string()));
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_product_of_two_paren_groups() {
+        // x = (1+2)*(3+4);  →  1+2=t1, 3+4=t2, t1*t2=t3, = t3 → x
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio { x = (1 + 2) * (3 + 4); }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(PLUS.to_string(),  "1".to_string(),  "2".to_string(),  "t1".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),  "3".to_string(),  "4".to_string(),  "t2".to_string()));
+        expected.quads.push(Quad::new(MULTP.to_string(), "t1".to_string(), "t2".to_string(), "t3".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(), "t3".to_string(), "".to_string(),   "x".to_string()));
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_two_paren_groups_summed() {
+        // x = (2+3)*4 + (1+6)*2;
+        // →  2+3=t1, t1*4=t2, 1+6=t3, t3*2=t4, t2+t4=t5, = t5 → x
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio { x = (2 + 3) * 4 + (1 + 6) * 2; }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(PLUS.to_string(),  "2".to_string(),  "3".to_string(),  "t1".to_string()));
+        expected.quads.push(Quad::new(MULTP.to_string(), "t1".to_string(), "4".to_string(),  "t2".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),  "1".to_string(),  "6".to_string(),  "t3".to_string()));
+        expected.quads.push(Quad::new(MULTP.to_string(), "t3".to_string(), "2".to_string(),  "t4".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),  "t2".to_string(), "t4".to_string(), "t5".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(), "t5".to_string(), "".to_string(),   "x".to_string()));
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_two_sequential_assignments() {
+        // x = 1 + 2;  y = 3 + 4;
+        // →  1+2=t1, =t1→x,  3+4=t2, =t2→y
+        let program = "
+            programa test;
+            vars x, y : entero;
+            inicio { x = 1 + 2; y = 3 + 4; }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(PLUS.to_string(),  "1".to_string(),  "2".to_string(),  "t1".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(), "t1".to_string(), "".to_string(),   "x".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),  "3".to_string(),  "4".to_string(),  "t2".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(), "t2".to_string(), "".to_string(),   "y".to_string()));
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_nested_parens_div() {
+        // x = ((1+2)*3)/((4+5)*6);
+        // →  1+2=t1, t1*3=t2, 4+5=t3, t3*6=t4, t2/t4=t5, = t5 → x
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio { x = ((1 + 2) * 3) / ((4 + 5) * 6); }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(PLUS.to_string(),  "1".to_string(),  "2".to_string(),  "t1".to_string()));
+        expected.quads.push(Quad::new(MULTP.to_string(), "t1".to_string(), "3".to_string(),  "t2".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),  "4".to_string(),  "5".to_string(),  "t3".to_string()));
+        expected.quads.push(Quad::new(MULTP.to_string(), "t3".to_string(), "6".to_string(),  "t4".to_string()));
+        expected.quads.push(Quad::new(DIV.to_string(),   "t2".to_string(), "t4".to_string(), "t5".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(), "t5".to_string(), "".to_string(),   "x".to_string()));
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
 }
