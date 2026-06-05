@@ -47,11 +47,11 @@ impl Compiler {
                 match program_child.as_rule() {
                     Rule::VARS => {
                         //* Process variables */
-                        self.process_vars(program_child, GLOBAL)?; // Pass VARS? to the next function to process MULT_VARS. In scope global
+                        self.handle_vars(program_child, GLOBAL)?; // Pass VARS? to the next function to process MULT_VARS. In scope global
                     },
                     Rule::FUNCS => {
                         //* Process function by passing the function match */
-                        self.processes_function(program_child)?;
+                        self.handle_function(program_child)?;
                     },
                     Rule::BODY => {
                         //* Process the body by going to its child and passing 'ESTATUTO' */
@@ -103,13 +103,35 @@ impl Compiler {
                     self.handle_body(body)?;
                     self.quads.add_goto_while(); // Handles updating the gotoF and adding the goto
                 },
+                //TODO need to handle call and imprime
                 Rule::CALL => {},
-                Rule::IMPRIME => {},
+                Rule::IMPRIME => {
+                    //* Handle rule: IMPRIME = {"escribe" ~ "(" ~  PRINT_STATEMENT ~ ("," ~ PRINT_STATEMENT)* ~ ")" ~ ";"} */
+                    for print_statement in statute_child.into_inner() {
+                        self.handle_print_statement(print_statement)?;
+                    }
+                },
                 Rule::ESTATUTO => {
                     self.handle_statute(statute_child)?;
                 },
                 _ => {}
             }
+        }
+        Ok(())
+    }
+
+    /// Handle rule: PRINT_STATEMENT = {EXPRESION | LETRERO}
+    pub fn handle_print_statement(&mut self, print_statement : Pair<Rule>) -> Result<(), String>{
+        let statement = print_statement.into_inner().next().unwrap(); // Get inside the print statement
+        match statement.as_rule() {
+            Rule::EXPRESION => {
+                self.handle_expression(statement)?;
+                self.quads.generate_print_expr();
+            },
+            Rule::LETRERO => {
+                self.quads.generate_print_litr(statement.as_str());
+            },
+            _ => {},
         }
         Ok(())
     }
@@ -314,7 +336,8 @@ impl Compiler {
 
     /// Handle rule: FUNCS = { FUNC_TYPE ~ ID ~ "(" ~ PARAMETERS? ~ ")" ~ "{" ~ VARS? ~ BODY ~ RETURN? ~ "}" ~ ";" }
     /// Processes the functions processes
-    fn processes_function(&mut self, function : Pair<Rule>) -> Result<(), String> {
+    //TODO Need to add logic to save in directory function the resources of each function
+    fn handle_function(&mut self, function : Pair<Rule>) -> Result<(), String> {
         //* Iterate over function statements, and processes its type and its variables */
         let mut funct_type : &str = "";
         let mut function_name : &str = "";
@@ -334,7 +357,7 @@ impl Compiler {
                     self.process_params(func_child)?;
                 },
                 Rule::VARS => {
-                    self.process_vars(func_child, function_name)?;
+                    self.handle_vars(func_child, function_name)?;
                 },
                 Rule::BODY => {
                     self.handle_body(func_child)?;
@@ -366,7 +389,7 @@ impl Compiler {
     }
 
     /// Processes this single argument: MULT_VARS = {ID ~ ("," ~ ID)* ~ ":" ~ TYPE ~ ";"}
-    fn process_vars(&mut self, vars : Pair<Rule>, func_name : &str) -> Result<(), String> {
+    fn handle_vars(&mut self, vars : Pair<Rule>, func_name : &str) -> Result<(), String> {
         for mult_var in vars.into_inner() {
             let mut ids : Vec<&str> = Vec::new();
             let mut var_type : &str = "";
@@ -392,7 +415,7 @@ impl Compiler {
 //* Following Rust convention of adding tests inside file tested */
 #[cfg(test)]
 mod tests {
-    use crate::{constants::GOTO, directory::{FuncEntry, VarEntry}, quadruples::Quad};
+    use crate::{constants::{GOTO, PRINT}, directory::{FuncEntry, VarEntry}, quadruples::Quad};
     use crate::{constants::{GOTOF}};
     use std::{collections::HashMap};
     
@@ -481,6 +504,7 @@ mod tests {
                     x = 1;
                 };
                 y = 1;
+                escribe(x+1, y, 'helooo');
             }
             fin
         ";
@@ -536,6 +560,10 @@ mod tests {
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(), "".to_string(),  "x".to_string()));
         expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "22".to_string()));
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(), "".to_string(),  "y".to_string()));
+        expected_quads.quads.push(Quad::new(PLUS.to_string(), "x".to_string(), "1".to_string(),  "t12".to_string()));
+        expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(), "".to_string(),  "t12".to_string()));
+        expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(), "".to_string(),  "y".to_string()));
+        expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(), "".to_string(),  "'helooo'".to_string()));
 
         assert_eq!(generated_quads.quads, expected_quads.quads);
     }
@@ -1807,6 +1835,208 @@ mod tests {
         expected.quads.push(Quad::new(SUBS.to_string(),     "x".to_string(),  "1".to_string(), "t2".to_string())); // 9
         expected.quads.push(Quad::new(ASSIGN.to_string(),   "t2".to_string(), "".to_string(),  "x".to_string()));  // 10
         expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),   "".to_string(),  "7".to_string()));  // 11
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    // --- 'escribe' (PRINT) statements ---
+    // Per class notes (12_Statements): one PRINT quad is generated per argument.
+    // An EXPRESION argument is evaluated first (leaving its result on the operand
+    // stack) and then a PRINT quad is emitted with that result. A LETRERO (string
+    // literal) is printed directly, keeping its surrounding quotes.
+
+    #[test]
+    fn test_quad_print_literal_var_and_expression() {
+        // x = 5;
+        // escribe('val:', x, x + 1);
+        //   0 = 5 _ x
+        //   1 PRINT _ _ 'val:'
+        //   2 PRINT _ _ x
+        //   3 + x 1 t1
+        //   4 PRINT _ _ t1
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio {
+                x = 5;
+                escribe('val:', x, x + 1);
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "5".to_string(), "".to_string(), "x".to_string()));        // 0
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),  "".to_string(), "'val:'".to_string()));   // 1
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),  "".to_string(), "x".to_string()));        // 2
+        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(), "1".to_string(), "t1".to_string()));      // 3
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),  "".to_string(), "t1".to_string()));       // 4
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_print_inside_if() {
+        // x = 3;
+        // si (x > 0) { escribe('pos', x); };
+        //   0 = 3 _ x
+        //   1 > x 0 t1
+        //   2 GOTOF t1 _ 5
+        //   3 PRINT _ _ 'pos'
+        //   4 PRINT _ _ x
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio {
+                x = 3;
+                si (x > 0) {
+                    escribe('pos', x);
+                };
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "3".to_string(),  "".to_string(), "x".to_string()));    // 0
+        expected.quads.push(Quad::new(MORE.to_string(),   "x".to_string(),  "0".to_string(), "t1".to_string()));  // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(), "5".to_string()));    // 2
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "'pos'".to_string())); // 3
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "x".to_string()));    // 4
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_print_inside_while_with_expression() {
+        // x = 0;
+        // mientras (x < 3) haz { escribe(x * 2); x = x + 1; };
+        //   0 = 0 _ x
+        //   1 < x 3 t1        (loop start = 1)
+        //   2 GOTOF t1 _ 8
+        //   3 * x 2 t2
+        //   4 PRINT _ _ t2
+        //   5 + x 1 t3
+        //   6 = t3 _ x
+        //   7 GOTO _ _ 1
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio {
+                x = 0;
+                mientras (x < 3) haz {
+                    escribe(x * 2);
+                    x = x + 1;
+                };
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(), "x".to_string()));    // 0
+        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "3".to_string(), "t1".to_string()));  // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(), "8".to_string()));    // 2
+        expected.quads.push(Quad::new(MULTP.to_string(),  "x".to_string(),  "2".to_string(), "t2".to_string()));  // 3
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "t2".to_string()));   // 4
+        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "1".to_string(), "t3".to_string()));  // 5
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(), "x".to_string()));    // 6
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(), "1".to_string()));    // 7
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_print_in_both_if_else_branches() {
+        // x = 1;
+        // si (x == 1) { escribe('one'); } sino { escribe('other', x); };
+        //   0 = 1 _ x
+        //   1 == x 1 t1
+        //   2 GOTOF t1 _ 5    (else at 5)
+        //   3 PRINT _ _ 'one' (if body)
+        //   4 GOTO _ _ 7      (skip else, end 7)
+        //   5 PRINT _ _ 'other' (else body)
+        //   6 PRINT _ _ x
+        let program = "
+            programa test;
+            vars x : entero;
+            inicio {
+                x = 1;
+                si (x == 1) {
+                    escribe('one');
+                } sino {
+                    escribe('other', x);
+                };
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(), "x".to_string()));      // 0
+        expected.quads.push(Quad::new(EQUAL.to_string(),  "x".to_string(),  "1".to_string(), "t1".to_string()));    // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(), "5".to_string()));      // 2
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "'one'".to_string()));  // 3
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(), "7".to_string()));      // 4
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "'other'".to_string())); // 5
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "x".to_string()));      // 6
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+    #[test]
+    fn test_quad_print_in_function_and_main() {
+        // nula log(n:entero){ { escribe('n=', n); si (n > 0) { escribe(n - 1); }; } }
+        // inicio { escribe('start'); x = 9; escribe(x); }
+        //
+        // log (indices 0.., temps t1..):
+        //   0 PRINT _ _ 'n='
+        //   1 PRINT _ _ n
+        //   2 > n 0 t1
+        //   3 GOTOF t1 _ 6
+        //   4 - n 1 t2
+        //   5 PRINT _ _ t2
+        // main (indices continue at 6, temps reset to t1):
+        //   6 PRINT _ _ 'start'
+        //   7 = 9 _ x
+        //   8 PRINT _ _ x
+        let program = "
+            programa test;
+            vars x : entero;
+            nula log(n : entero) {
+                {
+                    escribe('n=', n);
+                    si (n > 0) {
+                        escribe(n - 1);
+                    };
+                }
+            };
+            inicio {
+                escribe('start');
+                x = 9;
+                escribe(x);
+            }
+            fin
+        ";
+        let mut compiler = Compiler::new();
+        compiler.compile_program(program).unwrap();
+
+        let mut expected = Quadruples::new();
+        // log
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "'n='".to_string()));   // 0
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "n".to_string()));      // 1
+        expected.quads.push(Quad::new(MORE.to_string(),   "n".to_string(),  "0".to_string(), "t1".to_string()));    // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(), "6".to_string()));      // 3
+        expected.quads.push(Quad::new(SUBS.to_string(),   "n".to_string(),  "1".to_string(), "t2".to_string()));    // 4
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "t2".to_string()));     // 5
+        // main (temps reset)
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "'start'".to_string())); // 6
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "9".to_string(),  "".to_string(), "x".to_string()));      // 7
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "x".to_string()));      // 8
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }

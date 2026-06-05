@@ -1,4 +1,4 @@
-use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, ASSIGN, GOTOF, GOTO}};
+use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, ASSIGN, GOTOF, GOTO, PRINT}};
 use std::{collections::HashMap};
 
 #[derive(Debug, PartialEq)]
@@ -70,7 +70,19 @@ impl Quadruples {
         Ok(())
     }
 
+    /// Generate print statements into the quadruple by getting last value
+    pub fn generate_print_expr(&mut self) {
+        let value = self.stack_vars.pop().unwrap(); // Get the value of the last variable pushed
+        self.quads.push(Quad { operator: PRINT.to_string(), left: "".to_string(), right: "".to_string(), result: value.0}); 
+    }
+    
+    pub fn generate_print_litr(&mut self, value : &str) {
+        self.quads.push(Quad { operator: PRINT.to_string(), left: "".to_string(), right: "".to_string(), result: value.to_string()});
+    }
+    
+
     /// Generates a new temporal variable based on a counter
+    //TODO Need to add logic to save temp in addresses instead of t1,t2,...,tn
     fn new_temp(&mut self) -> String {
         self.temp_count += 1;
         return format!("t{}", self.temp_count)
