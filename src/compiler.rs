@@ -55,7 +55,10 @@ impl Compiler {
                     },
                     Rule::BODY => {
                         //* Process the body by going to its child and passing 'ESTATUTO' */
+                        // Set the current scope and tell where does the current function starts.
                         self.quads.set_scope_to(GLOBAL);
+                        let starting_point = self.quads.quads.len();
+                        self.directory.set_function_starting_point(&self.quads.get_scope(), starting_point)?;
                         self.handle_body(program_child)?;
                     }
                     _ => { }
@@ -68,6 +71,7 @@ impl Compiler {
     //* **** The next functions help traverse the tree and generate the quadruples */
     /// Process the body
     fn handle_body(&mut self, body : Pair<Rule>) -> Result<(), String> {
+        // Handle body
         for body_child in body.into_inner() {
             match body_child.as_rule() {
                 Rule::ESTATUTO => {
@@ -360,6 +364,10 @@ impl Compiler {
                     self.handle_vars(func_child, function_name)?;
                 },
                 Rule::BODY => {
+                    // Before handling body, tell where does the function start
+                    // Every time handle the body, need to set the starting point of the current function in the diretory
+                    let starting_point = self.quads.quads.len();
+                    self.directory.set_function_starting_point(&self.quads.get_scope(), starting_point)?;
                     self.handle_body(func_child)?;
                 }
                 _ => {},
@@ -380,7 +388,10 @@ impl Compiler {
                     let mut children = variable.into_inner();
                     let var_name = children.next().unwrap().as_str();
                     let var_type = children.next().unwrap().as_str();
-                    self.directory.add_variable_to_function(&self.quads.get_scope(), var_name, var_type)?;
+
+                    self.directory.add_variable_to_function(&self.quads.get_scope(), var_name, var_type)?; // add variable to the variable directory
+
+                    self.directory.add_param_to_function(&self.quads.get_scope(), var_type)?; // Add parameters type to the function
                 }
                 _ => {}
             }
@@ -582,7 +593,8 @@ mod tests {
             ("y".to_string(), VarEntry::new(ENTERO_TYPE, "")),
             ("z".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
         ]);
-        let correct_global = FuncEntry::new_with_vars(NULA_TYPE, expected_global_vars);
+        let mut correct_global = FuncEntry::new_with_vars(NULA_TYPE, expected_global_vars, vec![]);
+        correct_global.starting_quad = 5;
         
         assert_eq!(generated_global_directory, &correct_global);
 
@@ -599,7 +611,13 @@ mod tests {
             ("x".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
             ("y".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
         ]);
-        let expected_function1_vars = FuncEntry::new_with_vars(FLOTANTE_TYPE, function1_vars);
+        
+        let expected_params = vec!["entero".to_string(), "flotante".to_string(), "entero".to_string(), "entero".to_string(), "entero".to_string()];
+        let expected_function1_vars = FuncEntry::new_with_vars(
+            FLOTANTE_TYPE, // type of function
+            function1_vars, // variables of function
+            expected_params,
+        );
         
         assert_eq!(generated_function1_vars, &expected_function1_vars);
     }
@@ -617,7 +635,7 @@ mod tests {
             ("y".to_string(), VarEntry::new(ENTERO_TYPE, "")),
             ("z".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
         ]);
-        let correct_global = FuncEntry::new_with_vars(NULA_TYPE, global_vars);
+        let correct_global = FuncEntry::new_with_vars(NULA_TYPE, global_vars, vec![]);
         
         assert_ne!(actual_global, &correct_global);
 
@@ -627,7 +645,7 @@ mod tests {
         let function1_vars = HashMap::from([
             ("id1".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
         ]);
-        let correct_function1 = FuncEntry::new_with_vars(FLOTANTE_TYPE, function1_vars);
+        let correct_function1 = FuncEntry::new_with_vars(FLOTANTE_TYPE, function1_vars, vec![]);
         
         assert_ne!(actual_function1, &correct_function1);
     }
@@ -676,7 +694,7 @@ mod tests {
         let expected_vars = HashMap::from([
             ("a".to_string(), VarEntry::new(ENTERO_TYPE, "")),
         ]);
-        assert_eq!(global.vars, expected_vars);
+        assert_eq!(global.var_directory, expected_vars);
     }
 
     #[test]
@@ -693,7 +711,7 @@ mod tests {
         let expected_vars = HashMap::from([
             ("b".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
         ]);
-        assert_eq!(global.vars, expected_vars);
+        assert_eq!(global.var_directory, expected_vars);
     }
 
     #[test]
@@ -712,7 +730,7 @@ mod tests {
             ("b".to_string(), VarEntry::new(ENTERO_TYPE, "")),
             ("c".to_string(), VarEntry::new(ENTERO_TYPE, "")),
         ]);
-        assert_eq!(global.vars, expected_vars);
+        assert_eq!(global.var_directory, expected_vars);
     }
 
     #[test]
@@ -727,8 +745,8 @@ mod tests {
             fin
         ").unwrap();
         let global = compiler.directory.functions.get(GLOBAL).unwrap();
-        assert_eq!(global.vars.get("a").unwrap().var_type, ENTERO_TYPE);
-        assert_eq!(global.vars.get("b").unwrap().var_type, FLOTANTE_TYPE);
+        assert_eq!(global.var_directory.get("a").unwrap().var_type, ENTERO_TYPE);
+        assert_eq!(global.var_directory.get("b").unwrap().var_type, FLOTANTE_TYPE);
     }
 
     #[test]
@@ -756,7 +774,7 @@ mod tests {
         ").unwrap();
         let func = compiler.directory.functions.get("miFuncion").unwrap();
         assert_eq!(func.func_type, "nula");
-        assert!(func.vars.is_empty());
+        assert!(func.var_directory.is_empty());
     }
 
     #[test]
@@ -801,7 +819,7 @@ mod tests {
             fin
         ").unwrap();
         let func = compiler.directory.functions.get("procesar").unwrap();
-        assert_eq!(func.vars.get("valor").unwrap().var_type, ENTERO_TYPE);
+        assert_eq!(func.var_directory.get("valor").unwrap().var_type, ENTERO_TYPE);
     }
 
     #[test]
@@ -816,9 +834,9 @@ mod tests {
             fin
         ").unwrap();
         let func = compiler.directory.functions.get("sumar").unwrap();
-        assert_eq!(func.vars.get("a").unwrap().var_type, ENTERO_TYPE);
-        assert_eq!(func.vars.get("b").unwrap().var_type, FLOTANTE_TYPE);
-        assert_eq!(func.vars.get("c").unwrap().var_type, ENTERO_TYPE);
+        assert_eq!(func.var_directory.get("a").unwrap().var_type, ENTERO_TYPE);
+        assert_eq!(func.var_directory.get("b").unwrap().var_type, FLOTANTE_TYPE);
+        assert_eq!(func.var_directory.get("c").unwrap().var_type, ENTERO_TYPE);
     }
 
     #[test]
@@ -836,8 +854,8 @@ mod tests {
             fin
         ").unwrap();
         let func = compiler.directory.functions.get("calcular").unwrap();
-        assert_eq!(func.vars.get("resultado").unwrap().var_type, FLOTANTE_TYPE);
-        assert_eq!(func.vars.get("contador").unwrap().var_type, ENTERO_TYPE);
+        assert_eq!(func.var_directory.get("resultado").unwrap().var_type, FLOTANTE_TYPE);
+        assert_eq!(func.var_directory.get("contador").unwrap().var_type, ENTERO_TYPE);
     }
 
     #[test]
@@ -854,8 +872,8 @@ mod tests {
             fin
         ").unwrap();
         let func = compiler.directory.functions.get("procesar").unwrap();
-        assert_eq!(func.vars.get("entrada").unwrap().var_type, ENTERO_TYPE);
-        assert_eq!(func.vars.get("temporal").unwrap().var_type, FLOTANTE_TYPE);
+        assert_eq!(func.var_directory.get("entrada").unwrap().var_type, ENTERO_TYPE);
+        assert_eq!(func.var_directory.get("temporal").unwrap().var_type, FLOTANTE_TYPE);
     }
 
     #[test]
@@ -902,6 +920,226 @@ mod tests {
             fin
         ");
         assert!(result.is_err());
+    }
+
+    // --- Multiple functions: validate ParameterTable (types + order) and starting_quad ---
+    // Quads form ONE continuous vector: functions are processed in source order,
+    // then global/main. starting_quad = the quad index where each scope's body begins.
+    // Quad cost: 'a op b' = 1; assignment adds +1; 'si' = cond+GOTOF+body(+GOTO+else);
+    // 'mientras' = cond+GOTOF+body+GOTO; 'escribe' = 1 per argument.
+
+    #[test]
+    fn test_directory_three_functions_params_and_starts() {
+        // nula fa(a:entero){ { a = a + 1; } }
+        //   fa body: + a 1 t1 (0), = t1 _ a (1)            → start 0
+        // entero fb(b:entero, c:flotante){ { b = b * 2; c = c + c; } }
+        //   * b 2 t1 (2), = t1 _ b (3), + c c t2 (4), = t2 _ c (5)  → start 2
+        // nula fc(d:entero, e:entero, f:entero){ { d = e + f; } }
+        //   + e f t1 (6), = t1 _ d (7)                     → start 6
+        // inicio { g = 5; }  →  = 5 _ g (8)                → global start 8
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa test;
+            vars g : entero;
+            nula fa(a : entero) {
+                {
+                    a = a + 1;
+                }
+            };
+            entero fb(b : entero, c : flotante) {
+                {
+                    b = b * 2;
+                    c = c + c;
+                }
+            };
+            nula fc(d : entero, e : entero, f : entero) {
+                {
+                    d = e + f;
+                }
+            };
+            inicio {
+                g = 5;
+            }
+            fin
+        ").unwrap();
+
+        let fa = compiler.directory.functions.get("fa").unwrap();
+        assert_eq!(fa.parameters, vec!["entero".to_string()]);
+        assert_eq!(fa.starting_quad, 0);
+
+        let fb = compiler.directory.functions.get("fb").unwrap();
+        assert_eq!(fb.parameters, vec!["entero".to_string(), "flotante".to_string()]);
+        assert_eq!(fb.starting_quad, 2);
+
+        let fc = compiler.directory.functions.get("fc").unwrap();
+        assert_eq!(fc.parameters, vec!["entero".to_string(), "entero".to_string(), "entero".to_string()]);
+        assert_eq!(fc.starting_quad, 6);
+
+        let global = compiler.directory.functions.get(GLOBAL).unwrap();
+        assert_eq!(global.parameters, Vec::<String>::new());
+        assert_eq!(global.starting_quad, 8);
+    }
+
+    #[test]
+    fn test_directory_four_functions_control_flow_starts() {
+        // nula uno(a:entero){ { si (a > 0) { a = a + 1; }; } }
+        //   > a 0 t1 (0), GOTOF (1), + a 1 t2 (2), = t2 _ a (3)         → start 0
+        // nula dos(b:entero){ { mientras (b < 5) haz { b = b + 1; }; } }
+        //   < b 5 t1 (4), GOTOF (5), + b 1 t2 (6), = t2 _ b (7), GOTO (8) → start 4
+        // nula tres(c:entero){ { si (c == 0) { c = 1; } sino { c = 2; }; } }
+        //   == c 0 t1 (9), GOTOF (10), = 1 _ c (11), GOTO (12), = 2 _ c (13) → start 9
+        // nula cuatro(d:entero){ { d = d - 1; } }
+        //   - d 1 t1 (14), = t1 _ d (15)                                 → start 14
+        // inicio { r = 0; }  →  = 0 _ r (16)                             → global start 16
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa test;
+            vars r : entero;
+            nula uno(a : entero) {
+                {
+                    si (a > 0) {
+                        a = a + 1;
+                    };
+                }
+            };
+            nula dos(b : entero) {
+                {
+                    mientras (b < 5) haz {
+                        b = b + 1;
+                    };
+                }
+            };
+            nula tres(c : entero) {
+                {
+                    si (c == 0) {
+                        c = 1;
+                    } sino {
+                        c = 2;
+                    };
+                }
+            };
+            nula cuatro(d : entero) {
+                {
+                    d = d - 1;
+                }
+            };
+            inicio {
+                r = 0;
+            }
+            fin
+        ").unwrap();
+
+        assert_eq!(compiler.directory.functions.get("uno").unwrap().starting_quad, 0);
+        assert_eq!(compiler.directory.functions.get("dos").unwrap().starting_quad, 4);
+        assert_eq!(compiler.directory.functions.get("tres").unwrap().starting_quad, 9);
+        assert_eq!(compiler.directory.functions.get("cuatro").unwrap().starting_quad, 14);
+        assert_eq!(compiler.directory.functions.get(GLOBAL).unwrap().starting_quad, 16);
+
+        // Each of these functions has a single entero parameter
+        assert_eq!(compiler.directory.functions.get("uno").unwrap().parameters, vec!["entero".to_string()]);
+        assert_eq!(compiler.directory.functions.get("dos").unwrap().parameters, vec!["entero".to_string()]);
+        assert_eq!(compiler.directory.functions.get("tres").unwrap().parameters, vec!["entero".to_string()]);
+        assert_eq!(compiler.directory.functions.get("cuatro").unwrap().parameters, vec!["entero".to_string()]);
+    }
+
+    #[test]
+    fn test_directory_five_functions_parameter_tables() {
+        // Focus: ParameterTable order + types for functions with 1..5 params.
+        // Bodies are all a single assignment (2 quads each), so starts are 0,2,4,6,8; global 10.
+        // p1(a:entero)                                         → start 0
+        // p2(a:entero, b:flotante)                             → start 2
+        // p3(a:flotante, b:entero, c:flotante)                 → start 4
+        // p4(a:entero, b:entero, c:flotante, d:entero)         → start 6
+        // p5(a:flotante, b:flotante, c:entero, d:entero, e:flotante) → start 8
+        // inicio { m = 1; }                                    → global start 10
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa test;
+            vars m : entero;
+            nula p1(a : entero) {
+                { a = a + 1; }
+            };
+            nula p2(a : entero, b : flotante) {
+                { a = a + 1; }
+            };
+            nula p3(a : flotante, b : entero, c : flotante) {
+                { a = a + a; }
+            };
+            entero p4(a : entero, b : entero, c : flotante, d : entero) {
+                { a = a + 1; }
+            };
+            flotante p5(a : flotante, b : flotante, c : entero, d : entero, e : flotante) {
+                { a = a + a; }
+            };
+            inicio {
+                m = 1;
+            }
+            fin
+        ").unwrap();
+
+        let p1 = compiler.directory.functions.get("p1").unwrap();
+        assert_eq!(p1.parameters, vec!["entero".to_string()]);
+        assert_eq!(p1.starting_quad, 0);
+
+        let p2 = compiler.directory.functions.get("p2").unwrap();
+        assert_eq!(p2.parameters, vec!["entero".to_string(), "flotante".to_string()]);
+        assert_eq!(p2.starting_quad, 2);
+
+        let p3 = compiler.directory.functions.get("p3").unwrap();
+        assert_eq!(p3.parameters, vec!["flotante".to_string(), "entero".to_string(), "flotante".to_string()]);
+        assert_eq!(p3.starting_quad, 4);
+
+        let p4 = compiler.directory.functions.get("p4").unwrap();
+        assert_eq!(p4.parameters, vec!["entero".to_string(), "entero".to_string(), "flotante".to_string(), "entero".to_string()]);
+        assert_eq!(p4.starting_quad, 6);
+
+        let p5 = compiler.directory.functions.get("p5").unwrap();
+        assert_eq!(p5.parameters, vec!["flotante".to_string(), "flotante".to_string(), "entero".to_string(), "entero".to_string(), "flotante".to_string()]);
+        assert_eq!(p5.starting_quad, 8);
+
+        assert_eq!(compiler.directory.functions.get(GLOBAL).unwrap().starting_quad, 10);
+    }
+
+    #[test]
+    fn test_directory_empty_body_functions_starting_quads() {
+        // Edge: empty-body functions emit 0 quads, so the quad counter does not advance.
+        // nula vacia1(){ { } }            → 0 quads, start 0
+        // nula vacia2(a:entero){ { } }    → 0 quads, start 0 (nothing emitted yet)
+        // nula conuso(b:entero){ { b = b + 1; } }  → + b 1 t1 (0), = t1 _ b (1), start 0
+        // inicio { x = 0; }               → = 0 _ x (2), global start 2
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa test;
+            vars x : entero;
+            nula vacia1() {
+                { }
+            };
+            nula vacia2(a : entero) {
+                { }
+            };
+            nula conuso(b : entero) {
+                {
+                    b = b + 1;
+                }
+            };
+            inicio {
+                x = 0;
+            }
+            fin
+        ").unwrap();
+
+        // Empty functions: counter not advanced, both start at 0
+        assert_eq!(compiler.directory.functions.get("vacia1").unwrap().starting_quad, 0);
+        assert_eq!(compiler.directory.functions.get("vacia1").unwrap().parameters, Vec::<String>::new());
+        assert_eq!(compiler.directory.functions.get("vacia2").unwrap().starting_quad, 0);
+        assert_eq!(compiler.directory.functions.get("vacia2").unwrap().parameters, vec!["entero".to_string()]);
+
+        // First function that emits quads also starts at 0
+        assert_eq!(compiler.directory.functions.get("conuso").unwrap().starting_quad, 0);
+        assert_eq!(compiler.directory.functions.get("conuso").unwrap().parameters, vec!["entero".to_string()]);
+
+        // main begins after conuso's 2 quads
+        assert_eq!(compiler.directory.functions.get(GLOBAL).unwrap().starting_quad, 2);
     }
 
     // ! Following functions tests that the quadruple are being created correctly
