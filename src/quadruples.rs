@@ -1,4 +1,4 @@
-use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, ASSIGN, GOTOF, GOTO, PRINT}};
+use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, ASSIGN, GOTOF, GOTO, PRINT, TEMP_FLOAT_START, TEMP_INT_START}};
 use std::{collections::HashMap};
 
 #[derive(Debug, PartialEq)]
@@ -19,11 +19,12 @@ impl Quad {
 
 #[derive(Debug, PartialEq)]
 pub struct Quadruples {
-    pub quads : Vec<Quad>, // Were all the quadruples are storesd
+    pub quads : Vec<Quad>, // Were all the quadruples are stored
     stack_vars : Vec<(String, String)>, // (name, type) of the variable
     stack_op : Vec<String>, // Stack to save the operators
     stack_jump : Vec<usize>,
-    temp_count : usize,
+    temp_int_count : usize,
+    temp_float_count : usize,
     curr_scope : String,
 }
 
@@ -34,7 +35,8 @@ impl Quadruples {
             stack_vars : Vec::new(),
             stack_op : Vec::new(),
             stack_jump : Vec::new(),
-            temp_count : 0,
+            temp_int_count : 0,
+            temp_float_count : 0,
             curr_scope : String::new(),
         }
     }
@@ -60,8 +62,8 @@ impl Quadruples {
             return Ok(());
         }
 
-        let temp = self.new_temp();
         let temp_type = Quadruples::obtain_type(&left.1, &right.1, &op)?;
+        let temp = self.get_next_temp(&temp_type)?;
 
         // Add the quad to the quadruple list, and save the temporal variable to the stack
         self.quads.push(Quad::new(op, left.0, right.0,temp.clone()));
@@ -76,16 +78,24 @@ impl Quadruples {
         self.quads.push(Quad { operator: PRINT.to_string(), left: "".to_string(), right: "".to_string(), result: value.0}); 
     }
     
-    pub fn generate_print_litr(&mut self, value : &str) {
-        self.quads.push(Quad { operator: PRINT.to_string(), left: "".to_string(), right: "".to_string(), result: value.to_string()});
+    pub fn generate_print_litr(&mut self, address : &str) {
+        self.quads.push(Quad { operator: PRINT.to_string(), left: "".to_string(), right: "".to_string(), result: address.to_string()});
     }
-    
 
-    /// Generates a new temporal variable based on a counter
-    //TODO Need to add logic to save temp in addresses instead of t1,t2,...,tn
-    fn new_temp(&mut self) -> String {
-        self.temp_count += 1;
-        return format!("t{}", self.temp_count)
+    /// Get next temporal given a type
+    pub fn get_next_temp(&mut self, var_type : &str) -> Result<String, String> {
+        let new_temp;
+        if var_type == ENTERO_TYPE {
+            new_temp = self.temp_int_count + TEMP_INT_START;
+            self.temp_int_count += 1;
+        } else if var_type == FLOTANTE_TYPE {
+            new_temp = self.temp_float_count + TEMP_FLOAT_START;
+            self.temp_float_count += 1;
+        } else {
+            return Err(format!("Wront type of variable"));
+        }
+
+        return Ok(new_temp.to_string());
     }
 
     /// Semantic cube: given two types and an operation, returns the resulting operation
@@ -135,7 +145,7 @@ impl Quadruples {
     }
 
     //* Getter and setter methods */
-    pub fn push_var(&mut self, name: String, var_type: String) { self.stack_vars.push((name, var_type)); }
+    pub fn push_var(&mut self, address: String, var_type: String) { self.stack_vars.push((address, var_type)); }
 
     pub fn push_op(&mut self, op: String) { self.stack_op.push(op); }
 
@@ -180,8 +190,15 @@ impl Quadruples {
     pub fn get_scope(&self) -> &str {
         return &self.curr_scope;
     }
+    
     pub fn set_scope_to(&mut self, scope : &str) {
         self.curr_scope = scope.to_string();
-        self.temp_count = 0;
+        self.temp_int_count = 0;
+        self.temp_float_count = 0;
+    }
+
+    // return the counts of temporal int and float variables
+    pub fn get_temporal_counts(&self) -> (usize, usize) {
+        return (self.temp_int_count, self.temp_float_count)
     }
 }

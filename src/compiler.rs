@@ -1,8 +1,8 @@
-use pest::iterators::{Pair, Pairs};
+﻿use pest::iterators::{Pair, Pairs};
 
 use crate::{directory::DirFunc};
 use crate::{quadruples::Quadruples};
-use crate::constants::{DIV, ENTERO_TYPE, ASSIGN, PARENTHESIS, FLOTANTE_TYPE, GLOBAL, MULTP, NULA_TYPE, PLUS, SUBS, LESS, MORE, EQUAL, NOT_EQUAL};
+use crate::constants::{ASSIGN, DIV, ENTERO_TYPE, EQUAL, FLOTANTE_TYPE, GLOBAL, LESS, LITERAL_TYPE, MORE, MULTP, NOT_EQUAL, NULA_TYPE, PARENTHESIS, PLUS, SUBS};
 
 use pest::Parser;
 use pest_derive::Parser;
@@ -60,6 +60,10 @@ impl Compiler {
                         let starting_point = self.quads.quads.len();
                         self.directory.set_function_starting_point(&self.quads.get_scope(), starting_point)?;
                         self.handle_body(program_child)?;
+
+                        // Need to update the global scope temporal counts
+                        let (temp_int_count, temp_float_count) = self.quads.get_temporal_counts();
+                        self.directory.set_temporal_count(self.quads.get_scope(), temp_int_count, temp_float_count)?;
                     }
                     _ => { }
                 }
@@ -133,7 +137,9 @@ impl Compiler {
                 self.quads.generate_print_expr();
             },
             Rule::LETRERO => {
-                self.quads.generate_print_litr(statement.as_str());
+                let address = self.directory.save_constant(LITERAL_TYPE, statement.as_str())?;
+                
+                self.quads.generate_print_litr(&address.to_string());
             },
             _ => {},
         }
@@ -173,8 +179,13 @@ impl Compiler {
             match assing_child.as_rule() {
                 Rule::ID => {
                     // Save the assign in the stack
-                    let var_type = self.directory.get_var_type_of(self.quads.get_scope(), assing_child.as_str())?;
-                    self.quads.push_var(assing_child.as_str().to_string(), var_type);
+                    let var_name = assing_child.as_str();
+                    let var_type = self.directory.get_var_type_of(self.quads.get_scope(), var_name)?;
+
+                    // Get the address of the variable
+                    let address = self.directory.get_var_address_of(self.quads.get_scope(), var_name)?;
+
+                    self.quads.push_var(address, var_type);
 
                     // Push the assign operator
                     self.quads.push_op(ASSIGN.to_string());
@@ -305,36 +316,51 @@ impl Compiler {
     /// Adds variable to stack 
     fn process_single_factor(&mut self, mut single_factor : Pairs<Rule>) -> Result<(), String> {
         let mut term = single_factor.next().unwrap();
-        let var_name;
+        let mut sign : &str = "";
         // Handle when the ID/CTE has a sign before it
         if term.as_rule() == Rule::ARITH_OP {
-            let sign = term.as_str(); // get sign as string
-            
+            sign = term.as_str(); // get sign as string
             term = single_factor.next().unwrap(); // get the ID or CTE
-            var_name = format!("{}{}", sign, term.as_str());
-        } else {
-            var_name = term.as_str().to_string();
         }
 
-        // Get the type of the CTE/ID
-        let mut var_type : String = "".to_string();
+        // Get the type of the CTE/ID using term (which right now is the name of the ID/CTE)
         match term.as_rule() {
             Rule::ID => {
-                var_type = self.directory.get_var_type_of(self.quads.get_scope(), term.as_str())?;
+                let var_type = self.directory.get_var_type_of(self.quads.get_scope(), term.as_str())?;
+
+                let address = self.directory.get_var_address_of(self.quads.get_scope(), term.as_str())?;
+
+                if sign == "-" {
+                    // If a minus sign, need to emit a quad that performs that opeartion
+                    let zero_addrs = self.directory.save_constant(ENTERO_TYPE, "0")?;
+
+                    // Generate a quad that creates a temp variable with negative of the ID
+                    self.quads.push_var(zero_addrs.to_string(), ENTERO_TYPE.to_string());
+                    self.quads.push_var(address, var_type);
+                    self.quads.push_op(SUBS.to_string());
+                    self.quads.resolve()?; // leave on the stack a negated variable
+                } else {
+                    // If '+' don't do anything, just add the var
+                    self.quads.push_var(address, var_type);
+                }
 
             },
             Rule::CTE => {
-                let cte_inner = term.into_inner().next().unwrap(); // Go to next child inside CTE
+                let var_name = format!("{}{}", sign, term.as_str());
+                let cte_inner = term.into_inner().next().unwrap(); // Go to next child inside CTE which is either cte_entero or cte_flotante
                 
-                var_type = match cte_inner.as_rule() {
+                let var_type = match cte_inner.as_rule() {
                     Rule::cte_ent => ENTERO_TYPE.to_string(),
                     Rule::cte_flot => FLOTANTE_TYPE.to_string(),
                     _ => return Err(format!("Invalid constant")),
-                }
+                };
+
+                // Save and get the address of the constant created
+                let address = self.directory.save_constant(&var_type, &var_name)?;
+                self.quads.push_var(address.to_string(), var_type);
             },
             _ => {},
         }
-        self.quads.push_var(var_name, var_type);
         Ok(())
     }
 
@@ -355,6 +381,8 @@ impl Compiler {
                     function_name = func_child.as_str();
                     self.directory.create_function(function_name, funct_type)?; // create the function in directory
                     self.quads.set_scope_to(function_name);
+
+                    // Need to save a variable in global that will store the return of this function
                 }
                 Rule::PARAMETERS => {
                     //* Process each SINGLE_VAR that exists in parameters */
@@ -369,10 +397,24 @@ impl Compiler {
                     let starting_point = self.quads.quads.len();
                     self.directory.set_function_starting_point(&self.quads.get_scope(), starting_point)?;
                     self.handle_body(func_child)?;
-                }
+
+                    if funct_type != NULA_TYPE {
+                        self.directory.add_variable_to_function(GLOBAL, function_name, funct_type)?; // Add the function as a variable in global only if it has a return type
+                    }
+                },
+                Rule::RETURN => {
+                    // Throw an error if the function is NULA_TYPE
+                    if func_child.as_str() == NULA_TYPE {
+                        return Err(format!("Syntax error: cannot have a return statement in a 'nula' function"))
+                    }
+                },
                 _ => {},
             }
         }
+        
+        // Need to update the function temporal counts
+        let (temp_int_count, temp_float_count) = self.quads.get_temporal_counts();
+        self.directory.set_temporal_count(self.quads.get_scope(), temp_int_count, temp_float_count)?;
         Ok(())
     }
     
@@ -525,56 +567,51 @@ mod tests {
         let generated_quads = compiler.quads;
         let mut expected_quads : Quadruples = Quadruples::new();
 
+        // Addresses:
+        //   function1 locals: true=5000 (param), x=5001  | uses global y=1 for 'y = ...'
+        //   main/global vars: x=0, y=1
+        //   constants (global+shared, first-seen): 1=2000, 2=2001, 3=2002, 4=2003, 7=2004, 9=2005 | literal 'helooo'=4000
+        //   temps reset per scope: function1 t1=7000 | main t1..t12 = 7000..7011
+
         // Build the expected quadruples for function1
-        expected_quads.quads.push(Quad::new(PLUS.to_string(), "x".to_string(), "true".to_string(),  "t1".to_string()));
-        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "t1".to_string(), "".to_string(),  "y".to_string()));
-        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "true".to_string(), "".to_string(),  "5".to_string()));
-        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(), "".to_string(),  "x".to_string()));
-        expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "2".to_string()));
+        expected_quads.quads.push(Quad::new(PLUS.to_string(),   "5001".to_string(), "5000".to_string(), "7000".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "1".to_string()));
+        expected_quads.quads.push(Quad::new(GOTOF.to_string(),  "5000".to_string(), "".to_string(),     "5".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "5001".to_string()));
+        expected_quads.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "2".to_string()));
 
-        // Build the expected quadruples for MAIN
-        expected_quads.quads.push(Quad::new(PLUS.to_string(), "x".to_string(), "2".to_string(),  "t1".to_string()));
-        expected_quads.quads.push(Quad::new(MULTP.to_string(),
-         "t1".to_string(), "3".to_string(), "t2".to_string()));
-        expected_quads.quads.push(Quad::new(DIV.to_string(),
-         "7".to_string(), "9".to_string(), "t3".to_string()));
-        expected_quads.quads.push(Quad::new(PLUS.to_string(),
-         "4".to_string(), "t3".to_string(), "t4".to_string()));
-        expected_quads.quads.push(Quad::new(DIV.to_string(),
-         "t2".to_string(), "t4".to_string(), "t5".to_string()));
-        expected_quads.quads.push(Quad::new(ASSIGN.to_string(),
-         "t5".to_string(), "".to_string(), "x".to_string()));
+        // Build the expected quadruples for MAIN: x = (x + 2)*3/(4+7/9)
+        expected_quads.quads.push(Quad::new(PLUS.to_string(),  "0".to_string(),    "2001".to_string(), "7000".to_string()));
+        expected_quads.quads.push(Quad::new(MULTP.to_string(), "7000".to_string(), "2002".to_string(), "7001".to_string()));
+        expected_quads.quads.push(Quad::new(DIV.to_string(),   "2004".to_string(), "2005".to_string(), "7002".to_string()));
+        expected_quads.quads.push(Quad::new(PLUS.to_string(),  "2003".to_string(), "7002".to_string(), "7003".to_string()));
+        expected_quads.quads.push(Quad::new(DIV.to_string(),   "7001".to_string(), "7003".to_string(), "7004".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "7004".to_string(), "".to_string(),    "0".to_string()));
 
-         // Build the expected quadruples for expression2
-        expected_quads.quads.push(Quad::new(PLUS.to_string(), "y".to_string(), "x".to_string(),  "t6".to_string()));
-        expected_quads.quads.push(Quad::new(SUBS.to_string(),
-         "t6".to_string(), "y".to_string(), "t7".to_string()));
-        expected_quads.quads.push(Quad::new(MULTP.to_string(),
-         "t7".to_string(), "3".to_string(), "t8".to_string()));
-        expected_quads.quads.push(Quad::new(DIV.to_string(),
-         "t8".to_string(), "4".to_string(), "t9".to_string()));
-        expected_quads.quads.push(Quad::new(ASSIGN.to_string(),
-         "t9".to_string(), "".to_string(), "y".to_string()));
+        // Build the expected quadruples for expression2: y = (((y+x)-y)*3)/4
+        expected_quads.quads.push(Quad::new(PLUS.to_string(),  "1".to_string(),    "0".to_string(),    "7005".to_string()));
+        expected_quads.quads.push(Quad::new(SUBS.to_string(),  "7005".to_string(), "1".to_string(),    "7006".to_string()));
+        expected_quads.quads.push(Quad::new(MULTP.to_string(), "7006".to_string(), "2002".to_string(), "7007".to_string()));
+        expected_quads.quads.push(Quad::new(DIV.to_string(),   "7007".to_string(), "2003".to_string(), "7008".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "7008".to_string(), "".to_string(),    "1".to_string()));
 
-         // Build expected quadruples for the if statement
-         expected_quads.quads.push(Quad::new(MORE.to_string(),
-         "x".to_string(), "y".to_string(), "t10".to_string()));
-        expected_quads.quads.push(Quad::new(GOTOF.to_string(),
-         "t10".to_string(), "".to_string(), "21".to_string()));
-        expected_quads.quads.push(Quad::new(PLUS.to_string(), "x".to_string(), "1".to_string(),  "t11".to_string()));
-        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "t11".to_string(), "".to_string(),  "x".to_string()));
-        expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "22".to_string()));
-        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "3".to_string(), "".to_string(),  "y".to_string()));
+        // Build expected quadruples for the if statement: si (x > y) { x = x + 1; } sino { y = 3; }
+        expected_quads.quads.push(Quad::new(MORE.to_string(),  "0".to_string(),    "1".to_string(),    "7009".to_string()));
+        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "7009".to_string(), "".to_string(),     "21".to_string()));
+        expected_quads.quads.push(Quad::new(PLUS.to_string(),  "0".to_string(),    "2000".to_string(), "7010".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "7010".to_string(), "".to_string(),    "0".to_string()));
+        expected_quads.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),     "".to_string(),     "22".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),    "1".to_string()));
 
-        // Build expected quadruples for the while
-        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "x".to_string(), "".to_string(),  "25".to_string()));
-        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(), "".to_string(),  "x".to_string()));
-        expected_quads.quads.push(Quad::new(GOTO.to_string(), "".to_string(), "".to_string(),  "22".to_string()));
-        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(), "".to_string(),  "y".to_string()));
-        expected_quads.quads.push(Quad::new(PLUS.to_string(), "x".to_string(), "1".to_string(),  "t12".to_string()));
-        expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(), "".to_string(),  "t12".to_string()));
-        expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(), "".to_string(),  "y".to_string()));
-        expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(), "".to_string(),  "'helooo'".to_string()));
+        // Build expected quadruples for the while + y = 1 + escribe(x+1, y, 'helooo')
+        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "0".to_string(),    "".to_string(),     "25".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),    "0".to_string()));
+        expected_quads.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),     "".to_string(),     "22".to_string()));
+        expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),    "1".to_string()));
+        expected_quads.quads.push(Quad::new(PLUS.to_string(),  "0".to_string(),    "2000".to_string(), "7011".to_string()));
+        expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(),     "".to_string(),     "7011".to_string()));
+        expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(),     "".to_string(),     "1".to_string()));
+        expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(),     "".to_string(),     "4000".to_string()));
 
         assert_eq!(generated_quads.quads, expected_quads.quads);
     }
@@ -589,12 +626,17 @@ mod tests {
 
         // Check for variables in global function
         let expected_global_vars = HashMap::from([
-            ("x".to_string(), VarEntry::new(ENTERO_TYPE, "")),
-            ("y".to_string(), VarEntry::new(ENTERO_TYPE, "")),
-            ("z".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
+            ("x".to_string(), VarEntry::new(ENTERO_TYPE, 0)),
+            ("y".to_string(), VarEntry::new(ENTERO_TYPE, 1)),
+            ("z".to_string(), VarEntry::new(FLOTANTE_TYPE, 1000),),
+            ("function1".to_string(), VarEntry::new(FLOTANTE_TYPE, 1001),),
         ]);
         let mut correct_global = FuncEntry::new_with_vars(NULA_TYPE, expected_global_vars, vec![]);
         correct_global.starting_quad = 5;
+        correct_global.int_count = 2;
+        correct_global.float_count = 2;
+        correct_global.temp_int_count = 6;
+        correct_global.temp_float_count = 0;
         
         assert_eq!(generated_global_directory, &correct_global);
 
@@ -602,22 +644,27 @@ mod tests {
         let generated_function1_vars = compiler.directory.functions.get("function1").unwrap();
 
         let function1_vars = HashMap::from([
-            ("id1".to_string(), VarEntry::new(ENTERO_TYPE, "")),
-            ("sincero".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
-            ("hola".to_string(), VarEntry::new(ENTERO_TYPE, "")),
-            ("asignacion".to_string(), VarEntry::new(ENTERO_TYPE, "")),
-            ("true".to_string(), VarEntry::new(ENTERO_TYPE, "")),
-            ("var1".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
-            ("x".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
-            ("y".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
+            ("id1".to_string(), VarEntry::new(ENTERO_TYPE, 5000)),
+            ("sincero".to_string(), VarEntry::new(FLOTANTE_TYPE, 6000)),
+            ("hola".to_string(), VarEntry::new(ENTERO_TYPE, 5001)),
+            ("asignacion".to_string(), VarEntry::new(ENTERO_TYPE, 5002)),
+            ("true".to_string(), VarEntry::new(ENTERO_TYPE, 5003)),
+            ("var1".to_string(), VarEntry::new(FLOTANTE_TYPE, 6001)),
+            ("x".to_string(), VarEntry::new(FLOTANTE_TYPE, 6002)),
+            ("y".to_string(), VarEntry::new(FLOTANTE_TYPE,6003)),
         ]);
         
         let expected_params = vec!["entero".to_string(), "flotante".to_string(), "entero".to_string(), "entero".to_string(), "entero".to_string()];
-        let expected_function1_vars = FuncEntry::new_with_vars(
+        
+        let mut expected_function1_vars = FuncEntry::new_with_vars(
             FLOTANTE_TYPE, // type of function
             function1_vars, // variables of function
             expected_params,
         );
+        expected_function1_vars.int_count = 4;
+        expected_function1_vars.float_count = 4;
+        expected_function1_vars.temp_int_count = 1;
+        expected_function1_vars.temp_float_count = 0;
         
         assert_eq!(generated_function1_vars, &expected_function1_vars);
     }
@@ -631,9 +678,9 @@ mod tests {
 
         // Check for variables in global function
         let global_vars = HashMap::from([
-            ("x".to_string(), VarEntry::new(ENTERO_TYPE, "")),
-            ("y".to_string(), VarEntry::new(ENTERO_TYPE, "")),
-            ("z".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
+            ("x".to_string(), VarEntry::new(ENTERO_TYPE, 0)),
+            ("y".to_string(), VarEntry::new(ENTERO_TYPE, 0)),
+            ("z".to_string(), VarEntry::new(FLOTANTE_TYPE, 0)),
         ]);
         let correct_global = FuncEntry::new_with_vars(NULA_TYPE, global_vars, vec![]);
         
@@ -643,7 +690,7 @@ mod tests {
         let actual_function1 = compiler.directory.functions.get("function1").unwrap();
 
         let function1_vars = HashMap::from([
-            ("id1".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
+            ("id1".to_string(), VarEntry::new(FLOTANTE_TYPE, 0)),
         ]);
         let correct_function1 = FuncEntry::new_with_vars(FLOTANTE_TYPE, function1_vars, vec![]);
         
@@ -692,7 +739,7 @@ mod tests {
         ").unwrap();
         let global = compiler.directory.functions.get(GLOBAL).unwrap();
         let expected_vars = HashMap::from([
-            ("a".to_string(), VarEntry::new(ENTERO_TYPE, "")),
+            ("a".to_string(), VarEntry::new(ENTERO_TYPE, 0)),
         ]);
         assert_eq!(global.var_directory, expected_vars);
     }
@@ -708,8 +755,9 @@ mod tests {
             fin
         ").unwrap();
         let global = compiler.directory.functions.get(GLOBAL).unwrap();
+        // b is the first global float -> GLOBAL_FLOAT_START = 1000
         let expected_vars = HashMap::from([
-            ("b".to_string(), VarEntry::new(FLOTANTE_TYPE, "")),
+            ("b".to_string(), VarEntry::new(FLOTANTE_TYPE, 1000)),
         ]);
         assert_eq!(global.var_directory, expected_vars);
     }
@@ -725,10 +773,11 @@ mod tests {
             fin
         ").unwrap();
         let global = compiler.directory.functions.get(GLOBAL).unwrap();
+        // a, b, c are global ints in declaration order -> GLOBAL_INT_START = 0, 1, 2
         let expected_vars = HashMap::from([
-            ("a".to_string(), VarEntry::new(ENTERO_TYPE, "")),
-            ("b".to_string(), VarEntry::new(ENTERO_TYPE, "")),
-            ("c".to_string(), VarEntry::new(ENTERO_TYPE, "")),
+            ("a".to_string(), VarEntry::new(ENTERO_TYPE, 0)),
+            ("b".to_string(), VarEntry::new(ENTERO_TYPE, 1)),
+            ("c".to_string(), VarEntry::new(ENTERO_TYPE, 2)),
         ]);
         assert_eq!(global.var_directory, expected_vars);
     }
@@ -931,12 +980,12 @@ mod tests {
     #[test]
     fn test_directory_three_functions_params_and_starts() {
         // nula fa(a:entero){ { a = a + 1; } }
-        //   fa body: + a 1 t1 (0), = t1 _ a (1)            → start 0
+        //   fa body: + a 1 t1 (0), = t1 _ a (1)            â†’ start 0
         // entero fb(b:entero, c:flotante){ { b = b * 2; c = c + c; } }
-        //   * b 2 t1 (2), = t1 _ b (3), + c c t2 (4), = t2 _ c (5)  → start 2
+        //   * b 2 t1 (2), = t1 _ b (3), + c c t2 (4), = t2 _ c (5)  â†’ start 2
         // nula fc(d:entero, e:entero, f:entero){ { d = e + f; } }
-        //   + e f t1 (6), = t1 _ d (7)                     → start 6
-        // inicio { g = 5; }  →  = 5 _ g (8)                → global start 8
+        //   + e f t1 (6), = t1 _ d (7)                     â†’ start 6
+        // inicio { g = 5; }  â†’  = 5 _ g (8)                â†’ global start 8
         let mut compiler = Compiler::new();
         compiler.compile_program("
             programa test;
@@ -983,14 +1032,14 @@ mod tests {
     #[test]
     fn test_directory_four_functions_control_flow_starts() {
         // nula uno(a:entero){ { si (a > 0) { a = a + 1; }; } }
-        //   > a 0 t1 (0), GOTOF (1), + a 1 t2 (2), = t2 _ a (3)         → start 0
+        //   > a 0 t1 (0), GOTOF (1), + a 1 t2 (2), = t2 _ a (3)         â†’ start 0
         // nula dos(b:entero){ { mientras (b < 5) haz { b = b + 1; }; } }
-        //   < b 5 t1 (4), GOTOF (5), + b 1 t2 (6), = t2 _ b (7), GOTO (8) → start 4
+        //   < b 5 t1 (4), GOTOF (5), + b 1 t2 (6), = t2 _ b (7), GOTO (8) â†’ start 4
         // nula tres(c:entero){ { si (c == 0) { c = 1; } sino { c = 2; }; } }
-        //   == c 0 t1 (9), GOTOF (10), = 1 _ c (11), GOTO (12), = 2 _ c (13) → start 9
+        //   == c 0 t1 (9), GOTOF (10), = 1 _ c (11), GOTO (12), = 2 _ c (13) â†’ start 9
         // nula cuatro(d:entero){ { d = d - 1; } }
-        //   - d 1 t1 (14), = t1 _ d (15)                                 → start 14
-        // inicio { r = 0; }  →  = 0 _ r (16)                             → global start 16
+        //   - d 1 t1 (14), = t1 _ d (15)                                 â†’ start 14
+        // inicio { r = 0; }  â†’  = 0 _ r (16)                             â†’ global start 16
         let mut compiler = Compiler::new();
         compiler.compile_program("
             programa test;
@@ -1046,12 +1095,12 @@ mod tests {
     fn test_directory_five_functions_parameter_tables() {
         // Focus: ParameterTable order + types for functions with 1..5 params.
         // Bodies are all a single assignment (2 quads each), so starts are 0,2,4,6,8; global 10.
-        // p1(a:entero)                                         → start 0
-        // p2(a:entero, b:flotante)                             → start 2
-        // p3(a:flotante, b:entero, c:flotante)                 → start 4
-        // p4(a:entero, b:entero, c:flotante, d:entero)         → start 6
-        // p5(a:flotante, b:flotante, c:entero, d:entero, e:flotante) → start 8
-        // inicio { m = 1; }                                    → global start 10
+        // p1(a:entero)                                         â†’ start 0
+        // p2(a:entero, b:flotante)                             â†’ start 2
+        // p3(a:flotante, b:entero, c:flotante)                 â†’ start 4
+        // p4(a:entero, b:entero, c:flotante, d:entero)         â†’ start 6
+        // p5(a:flotante, b:flotante, c:entero, d:entero, e:flotante) â†’ start 8
+        // inicio { m = 1; }                                    â†’ global start 10
         let mut compiler = Compiler::new();
         compiler.compile_program("
             programa test;
@@ -1103,10 +1152,10 @@ mod tests {
     #[test]
     fn test_directory_empty_body_functions_starting_quads() {
         // Edge: empty-body functions emit 0 quads, so the quad counter does not advance.
-        // nula vacia1(){ { } }            → 0 quads, start 0
-        // nula vacia2(a:entero){ { } }    → 0 quads, start 0 (nothing emitted yet)
-        // nula conuso(b:entero){ { b = b + 1; } }  → + b 1 t1 (0), = t1 _ b (1), start 0
-        // inicio { x = 0; }               → = 0 _ x (2), global start 2
+        // nula vacia1(){ { } }            â†’ 0 quads, start 0
+        // nula vacia2(a:entero){ { } }    â†’ 0 quads, start 0 (nothing emitted yet)
+        // nula conuso(b:entero){ { b = b + 1; } }  â†’ + b 1 t1 (0), = t1 _ b (1), start 0
+        // inicio { x = 0; }               â†’ = 0 _ x (2), global start 2
         let mut compiler = Compiler::new();
         compiler.compile_program("
             programa test;
@@ -1150,11 +1199,12 @@ mod tests {
     fn test_quad_if_only_greater() {
         // x = 1;
         // si (x > 5) { x = x + 1; };
-        // idx: 0 = 1 _ x
-        //      1 > x 5 t1
-        //      2 GOTOF t1 _ 5   (false → skip body, end at 5)
-        //      3 + x 1 t2
-        //      4 = t2 _ x
+        // Addresses: x(gint)=0 | cte 1=2000, 5=2001 | t1(tint)=7000, t2=7001
+        // idx: 0 = 2000 _ 0
+        //      1 > 0 2001 7000
+        //      2 GOTOF 7000 _ 5   (false â†’ skip body, end at 5)
+        //      3 + 0 2000 7001
+        //      4 = 7001 _ 0
         let program = "
             programa test;
             vars x : entero;
@@ -1170,11 +1220,11 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "x".to_string()));
-        expected.quads.push(Quad::new(MORE.to_string(),  "x".to_string(),  "5".to_string(), "t1".to_string()));
-        expected.quads.push(Quad::new(GOTOF.to_string(), "t1".to_string(), "".to_string(),  "5".to_string()));
-        expected.quads.push(Quad::new(PLUS.to_string(),  "x".to_string(),  "1".to_string(), "t2".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(MORE.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string()));
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "5".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2000".to_string(), "7001".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "0".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1183,11 +1233,12 @@ mod tests {
     fn test_quad_if_only_less_with_expression_condition() {
         // x = 2;
         // si (x + 3 < 10) { x = 0; };
-        // idx: 0 = 2 _ x
-        //      1 + x 3 t1
-        //      2 < t1 10 t2
-        //      3 GOTOF t2 _ 5
-        //      4 = 0 _ x
+        // Addresses: x(gint)=0 | cte 2=2000, 3=2001, 10=2002, 0=2003 | t1=7000, t2=7001
+        // idx: 0 = 2000 _ 0
+        //      1 + 0 2001 7000
+        //      2 < 7000 2002 7001
+        //      3 GOTOF 7001 _ 5
+        //      4 = 2003 _ 0
         let program = "
             programa test;
             vars x : entero;
@@ -1203,11 +1254,11 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "2".to_string(),  "".to_string(),   "x".to_string()));
-        expected.quads.push(Quad::new(PLUS.to_string(),  "x".to_string(),  "3".to_string(),  "t1".to_string()));
-        expected.quads.push(Quad::new(LESS.to_string(),  "t1".to_string(), "10".to_string(), "t2".to_string()));
-        expected.quads.push(Quad::new(GOTOF.to_string(), "t2".to_string(), "".to_string(),   "5".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),   "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string()));
+        expected.quads.push(Quad::new(LESS.to_string(),   "7000".to_string(), "2002".to_string(), "7001".to_string()));
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7001".to_string(), "".to_string(),     "5".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "0".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1216,12 +1267,13 @@ mod tests {
     fn test_quad_if_only_equals_two_assignments_in_body() {
         // x = 5; y = 0;
         // si (x == 5) { y = 1; x = 2; };
-        // idx: 0 = 5 _ x
-        //      1 = 0 _ y
-        //      2 == x 5 t1
-        //      3 GOTOF t1 _ 6
-        //      4 = 1 _ y
-        //      5 = 2 _ x
+        // Addresses: x(gint)=0, y=1 | cte 5=2000, 0=2001, 1=2002, 2=2003 | t1=7000
+        // idx: 0 = 2000 _ 0
+        //      1 = 2001 _ 1
+        //      2 == 0 2000 7000
+        //      3 GOTOF 7000 _ 6
+        //      4 = 2002 _ 1
+        //      5 = 2003 _ 0
         let program = "
             programa test;
             vars x, y : entero;
@@ -1239,12 +1291,12 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "5".to_string(),  "".to_string(),  "x".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "y".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(),  "x".to_string(),  "5".to_string(), "t1".to_string()));
-        expected.quads.push(Quad::new(GOTOF.to_string(), "t1".to_string(), "".to_string(),  "6".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "y".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "2".to_string(),  "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "1".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(),  "0".to_string(),    "2000".to_string(), "7000".to_string()));
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "6".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "1".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "0".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1253,11 +1305,12 @@ mod tests {
     fn test_quad_if_only_not_equal() {
         // x = 7;
         // si (x != 0) { x = x * 2; };
-        // idx: 0 = 7 _ x
-        //      1 != x 0 t1
-        //      2 GOTOF t1 _ 5
-        //      3 * x 2 t2
-        //      4 = t2 _ x
+        // Addresses: x(gint)=0 | cte 7=2000, 0=2001, 2=2002 | t1=7000, t2=7001
+        // idx: 0 = 2000 _ 0
+        //      1 != 0 2001 7000
+        //      2 GOTOF 7000 _ 5
+        //      3 * 0 2002 7001
+        //      4 = 7001 _ 0
         let program = "
             programa test;
             vars x : entero;
@@ -1273,11 +1326,11 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(),    "7".to_string(),  "".to_string(),  "x".to_string()));
-        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "x".to_string(),  "0".to_string(), "t1".to_string()));
-        expected.quads.push(Quad::new(GOTOF.to_string(),    "t1".to_string(), "".to_string(),  "5".to_string()));
-        expected.quads.push(Quad::new(MULTP.to_string(),    "x".to_string(),  "2".to_string(), "t2".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(),    "t2".to_string(), "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "2000".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "0".to_string(),    "2001".to_string(), "7000".to_string()));
+        expected.quads.push(Quad::new(GOTOF.to_string(),     "7000".to_string(), "".to_string(),     "5".to_string()));
+        expected.quads.push(Quad::new(MULTP.to_string(),     "0".to_string(),    "2002".to_string(), "7001".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "7001".to_string(), "".to_string(),     "0".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1288,13 +1341,14 @@ mod tests {
     fn test_quad_if_else_greater() {
         // x = 4; y = 0;
         // si (x > 3) { y = 1; } sino { y = 2; };
-        // idx: 0 = 4 _ x
-        //      1 = 0 _ y
-        //      2 > x 3 t1
-        //      3 GOTOF t1 _ 6   (false → else at 6)
-        //      4 = 1 _ y        (if body)
-        //      5 GOTO _ _ 7     (skip else, end at 7)
-        //      6 = 2 _ y        (else body)
+        // Addresses: x(gint)=0, y=1 | cte 4=2000, 0=2001, 3=2002, 1=2003, 2=2004 | t1=7000
+        // idx: 0 = 2000 _ 0
+        //      1 = 2001 _ 1
+        //      2 > 0 2002 7000
+        //      3 GOTOF 7000 _ 6   (false â†’ else at 6)
+        //      4 = 2003 _ 1       (if body)
+        //      5 GOTO _ _ 7       (skip else, end at 7)
+        //      6 = 2004 _ 1       (else body)
         let program = "
             programa test;
             vars x, y : entero;
@@ -1313,13 +1367,13 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "4".to_string(),  "".to_string(),  "x".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "y".to_string()));
-        expected.quads.push(Quad::new(MORE.to_string(),  "x".to_string(),  "3".to_string(), "t1".to_string()));
-        expected.quads.push(Quad::new(GOTOF.to_string(), "t1".to_string(), "".to_string(),  "6".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "y".to_string()));
-        expected.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),   "".to_string(),  "7".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "2".to_string(),  "".to_string(),  "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "1".to_string()));
+        expected.quads.push(Quad::new(MORE.to_string(),   "0".to_string(),    "2002".to_string(), "7000".to_string()));
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "6".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "1".to_string()));
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "7".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2004".to_string(), "".to_string(),     "1".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1328,15 +1382,16 @@ mod tests {
     fn test_quad_if_else_less_with_arithmetic_bodies() {
         // x = 1; y = 1;
         // si (x < y) { x = x + y; } sino { x = x - y; };
-        // idx: 0 = 1 _ x
-        //      1 = 1 _ y
-        //      2 < x y t1
-        //      3 GOTOF t1 _ 7   (false → else at 7)
-        //      4 + x y t2       (if body)
-        //      5 = t2 _ x
-        //      6 GOTO _ _ 9     (skip else, end at 9)
-        //      7 - x y t3       (else body)
-        //      8 = t3 _ x
+        // Addresses: x(gint)=0, y=1 | cte 1=2000 | t1=7000, t2=7001, t3=7002
+        // idx: 0 = 2000 _ 0
+        //      1 = 2000 _ 1
+        //      2 < 0 1 7000
+        //      3 GOTOF 7000 _ 7   (false â†’ else at 7)
+        //      4 + 0 1 7001       (if body)
+        //      5 = 7001 _ 0
+        //      6 GOTO _ _ 9       (skip else, end at 9)
+        //      7 - 0 1 7002       (else body)
+        //      8 = 7002 _ 0
         let program = "
             programa test;
             vars x, y : entero;
@@ -1355,15 +1410,15 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "x".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "y".to_string()));
-        expected.quads.push(Quad::new(LESS.to_string(),  "x".to_string(),  "y".to_string(), "t1".to_string()));
-        expected.quads.push(Quad::new(GOTOF.to_string(), "t1".to_string(), "".to_string(),  "7".to_string()));
-        expected.quads.push(Quad::new(PLUS.to_string(),  "x".to_string(),  "y".to_string(), "t2".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),  "x".to_string()));
-        expected.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),   "".to_string(),  "9".to_string()));
-        expected.quads.push(Quad::new(SUBS.to_string(),  "x".to_string(),  "y".to_string(), "t3".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),  "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(), "0".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(), "1".to_string()));
+        expected.quads.push(Quad::new(LESS.to_string(),   "0".to_string(),    "1".to_string(), "7000".to_string()));
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(), "7".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "1".to_string(), "7001".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(), "0".to_string()));
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(), "9".to_string()));
+        expected.quads.push(Quad::new(SUBS.to_string(),   "0".to_string(),    "1".to_string(), "7002".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(), "0".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1372,14 +1427,15 @@ mod tests {
     fn test_quad_if_else_equals_with_expression_condition() {
         // x = 6; y = 0;
         // si (x * 2 == 12) { y = 1; } sino { y = 0; };
-        // idx: 0 = 6 _ x
-        //      1 = 0 _ y
-        //      2 * x 2 t1
-        //      3 == t1 12 t2
-        //      4 GOTOF t2 _ 7   (false → else at 7)
-        //      5 = 1 _ y        (if body)
-        //      6 GOTO _ _ 8     (skip else, end at 8)
-        //      7 = 0 _ y        (else body)
+        // Addresses: x(gint)=0, y=1 | cte 6=2000, 0=2001, 2=2002, 12=2003, 1=2004 | t1=7000, t2=7001
+        // idx: 0 = 2000 _ 0
+        //      1 = 2001 _ 1
+        //      2 * 0 2002 7000
+        //      3 == 7000 2003 7001
+        //      4 GOTOF 7001 _ 7   (false â†’ else at 7)
+        //      5 = 2004 _ 1       (if body)
+        //      6 GOTO _ _ 8       (skip else, end at 8)
+        //      7 = 2001 _ 1       (else body)
         let program = "
             programa test;
             vars x, y : entero;
@@ -1398,14 +1454,14 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "6".to_string(),  "".to_string(),   "x".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),   "y".to_string()));
-        expected.quads.push(Quad::new(MULTP.to_string(), "x".to_string(),  "2".to_string(),  "t1".to_string()));
-        expected.quads.push(Quad::new(EQUAL.to_string(),  "t1".to_string(), "12".to_string(), "t2".to_string()));
-        expected.quads.push(Quad::new(GOTOF.to_string(), "t2".to_string(), "".to_string(),   "7".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),   "y".to_string()));
-        expected.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),   "".to_string(),   "8".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),   "y".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "1".to_string()));
+        expected.quads.push(Quad::new(MULTP.to_string(),  "0".to_string(),    "2002".to_string(), "7000".to_string()));
+        expected.quads.push(Quad::new(EQUAL.to_string(),  "7000".to_string(), "2003".to_string(), "7001".to_string()));
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7001".to_string(), "".to_string(),     "7".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2004".to_string(), "".to_string(),     "1".to_string()));
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "8".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "1".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1414,15 +1470,16 @@ mod tests {
     fn test_quad_if_else_not_equal_complex_condition() {
         // x = 3; y = 5;
         // si ((x + 1) != (y - 1)) { x = 100; } sino { x = 200; };
-        // idx: 0 = 3 _ x
-        //      1 = 5 _ y
-        //      2 + x 1 t1
-        //      3 - y 1 t2
-        //      4 != t1 t2 t3
-        //      5 GOTOF t3 _ 8   (false → else at 8)
-        //      6 = 100 _ x      (if body)
-        //      7 GOTO _ _ 9     (skip else, end at 9)
-        //      8 = 200 _ x      (else body)
+        // Addresses: x(gint)=0, y=1 | cte 3=2000, 5=2001, 1=2002, 100=2003, 200=2004 | t1=7000, t2=7001, t3=7002
+        // idx: 0 = 2000 _ 0
+        //      1 = 2001 _ 1
+        //      2 + 0 2002 7000
+        //      3 - 1 2002 7001
+        //      4 != 7000 7001 7002
+        //      5 GOTOF 7002 _ 8   (false â†’ else at 8)
+        //      6 = 2003 _ 0       (if body)
+        //      7 GOTO _ _ 9       (skip else, end at 9)
+        //      8 = 2004 _ 0       (else body)
         let program = "
             programa test;
             vars x, y : entero;
@@ -1441,15 +1498,15 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(),    "3".to_string(),   "".to_string(),   "x".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(),    "5".to_string(),   "".to_string(),   "y".to_string()));
-        expected.quads.push(Quad::new(PLUS.to_string(),     "x".to_string(),   "1".to_string(),  "t1".to_string()));
-        expected.quads.push(Quad::new(SUBS.to_string(),     "y".to_string(),   "1".to_string(),  "t2".to_string()));
-        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "t1".to_string(),  "t2".to_string(), "t3".to_string()));
-        expected.quads.push(Quad::new(GOTOF.to_string(),    "t3".to_string(),  "".to_string(),   "8".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(),    "100".to_string(), "".to_string(),   "x".to_string()));
-        expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),    "".to_string(),   "9".to_string()));
-        expected.quads.push(Quad::new(ASSIGN.to_string(),    "200".to_string(), "".to_string(),   "x".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "2000".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "2001".to_string(), "".to_string(),     "1".to_string()));
+        expected.quads.push(Quad::new(PLUS.to_string(),      "0".to_string(),    "2002".to_string(), "7000".to_string()));
+        expected.quads.push(Quad::new(SUBS.to_string(),      "1".to_string(),    "2002".to_string(), "7001".to_string()));
+        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "7000".to_string(), "7001".to_string(), "7002".to_string()));
+        expected.quads.push(Quad::new(GOTOF.to_string(),     "7002".to_string(), "".to_string(),     "8".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "2003".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(GOTO.to_string(),      "".to_string(),     "".to_string(),     "9".to_string()));
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "2004".to_string(), "".to_string(),     "0".to_string()));
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1464,11 +1521,11 @@ mod tests {
         // idx: 0 = 0 _ x
         //      1 = 0 _ y
         //      2 < x 1 t1
-        //      3 GOTOF t1 _ 6   (first if, no else → end at 6)
+        //      3 GOTOF t1 _ 6   (first if, no else â†’ end at 6)
         //      4 = 1 _ x
         //      5 (continues)
         //      5 > y 2 t2
-        //      6 GOTOF t2 _ 9   (second if, false → else at 9)
+        //      6 GOTOF t2 _ 9   (second if, false â†’ else at 9)
         //      7 = 9 _ y        (if body)
         //      8 GOTO _ _ 10    (skip else, end at 10)
         //      9 = 8 _ y        (else body)
@@ -1492,17 +1549,18 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0, y=1 | cte 0=2000, 1=2001, 2=2002, 9=2003, 8=2004 | t1=7000, t2=7001
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "y".to_string()));  // 1
-        expected.quads.push(Quad::new(LESS.to_string(),  "x".to_string(),  "1".to_string(), "t1".to_string())); // 2
-        expected.quads.push(Quad::new(GOTOF.to_string(), "t1".to_string(), "".to_string(),  "5".to_string()));  // 3
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "x".to_string()));  // 4
-        expected.quads.push(Quad::new(MORE.to_string(),  "y".to_string(),  "2".to_string(), "t2".to_string())); // 5
-        expected.quads.push(Quad::new(GOTOF.to_string(), "t2".to_string(), "".to_string(),  "9".to_string()));  // 6
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "9".to_string(),  "".to_string(),  "y".to_string()));  // 7
-        expected.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),   "".to_string(),  "10".to_string())); // 8
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "8".to_string(),  "".to_string(),  "y".to_string()));  // 9
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));  // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "1".to_string()));  // 1
+        expected.quads.push(Quad::new(LESS.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "5".to_string()));  // 3
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "0".to_string()));  // 4
+        expected.quads.push(Quad::new(MORE.to_string(),   "1".to_string(),    "2002".to_string(), "7001".to_string())); // 5
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7001".to_string(), "".to_string(),     "9".to_string()));  // 6
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "1".to_string()));  // 7
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "10".to_string())); // 8
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2004".to_string(), "".to_string(),     "1".to_string()));  // 9
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1518,7 +1576,7 @@ mod tests {
         //      3 - x 4 t3
         //      4 = t3 _ y
         //      5 > x y t4
-        //      6 GOTOF t4 _ 10  (false → else at 10)
+        //      6 GOTOF t4 _ 10  (false â†’ else at 10)
         //      7 + x y t5       (if body)
         //      8 = t5 _ x
         //      9 GOTO _ _ 12    (skip else, end at 12)
@@ -1541,19 +1599,20 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0, y=1 | cte 1=2000, 2=2001, 3=2002, 4=2003 | t1..t6 = 7000..7005
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(PLUS.to_string(),  "1".to_string(),  "2".to_string(),  "t1".to_string())); // 0
-        expected.quads.push(Quad::new(MULTP.to_string(), "t1".to_string(), "3".to_string(),  "t2".to_string())); // 1
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),   "x".to_string()));  // 2
-        expected.quads.push(Quad::new(SUBS.to_string(),  "x".to_string(),  "4".to_string(),  "t3".to_string())); // 3
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),   "y".to_string()));  // 4
-        expected.quads.push(Quad::new(MORE.to_string(),  "x".to_string(),  "y".to_string(),  "t4".to_string())); // 5
-        expected.quads.push(Quad::new(GOTOF.to_string(), "t4".to_string(), "".to_string(),   "10".to_string())); // 6
-        expected.quads.push(Quad::new(PLUS.to_string(),  "x".to_string(),  "y".to_string(),  "t5".to_string())); // 7
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t5".to_string(), "".to_string(),   "x".to_string()));  // 8
-        expected.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),   "".to_string(),   "12".to_string())); // 9
-        expected.quads.push(Quad::new(MULTP.to_string(), "x".to_string(),  "2".to_string(),  "t6".to_string())); // 10
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t6".to_string(), "".to_string(),   "y".to_string()));  // 11
+        expected.quads.push(Quad::new(PLUS.to_string(),   "2000".to_string(), "2001".to_string(), "7000".to_string())); // 0
+        expected.quads.push(Quad::new(MULTP.to_string(),  "7000".to_string(), "2002".to_string(), "7001".to_string())); // 1
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "0".to_string()));    // 2
+        expected.quads.push(Quad::new(SUBS.to_string(),   "0".to_string(),    "2003".to_string(), "7002".to_string())); // 3
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "1".to_string()));    // 4
+        expected.quads.push(Quad::new(MORE.to_string(),   "0".to_string(),    "1".to_string(),    "7003".to_string())); // 5
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7003".to_string(), "".to_string(),     "10".to_string()));   // 6
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "1".to_string(),    "7004".to_string())); // 7
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7004".to_string(), "".to_string(),     "0".to_string()));    // 8
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "12".to_string()));   // 9
+        expected.quads.push(Quad::new(MULTP.to_string(),  "0".to_string(),    "2001".to_string(), "7005".to_string())); // 10
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7005".to_string(), "".to_string(),     "1".to_string()));    // 11
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1564,7 +1623,7 @@ mod tests {
         // mientras (x < 5) haz { x = x + 1; };
         // idx: 0 = 0 _ x
         //      1 < x 5 t1        (loop start = 1)
-        //      2 GOTOF t1 _ 6    (false → exit past loop)
+        //      2 GOTOF t1 _ 6    (false â†’ exit past loop)
         //      3 + x 1 t2
         //      4 = t2 _ x
         //      5 GOTO _ _ 1      (back to condition)
@@ -1582,13 +1641,14 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0 | cte 0=2000, 5=2001, 1=2002 | t1=7000, t2=7001
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
-        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "5".to_string(), "t1".to_string())); // 1
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "6".to_string()));  // 2
-        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "1".to_string(), "t2".to_string())); // 3
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),  "x".to_string()));  // 4
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "1".to_string()));  // 5
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));    // 0
+        expected.quads.push(Quad::new(LESS.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "6".to_string()));    // 2
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2002".to_string(), "7001".to_string())); // 3
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "0".to_string()));    // 4
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "1".to_string()));    // 5
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1622,16 +1682,17 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0, y=1 | cte 0=2000, 10=2001, 1=2002 | t1=7000, t2=7001, t3=7002
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),   "x".to_string()));  // 0
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),   "y".to_string()));  // 1
-        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "10".to_string(), "t1".to_string())); // 2
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),   "9".to_string()));  // 3
-        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "1".to_string(),  "t2".to_string())); // 4
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),   "x".to_string()));  // 5
-        expected.quads.push(Quad::new(PLUS.to_string(),   "y".to_string(),  "x".to_string(),  "t3".to_string())); // 6
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),   "y".to_string()));  // 7
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),   "2".to_string()));  // 8
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));    // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "1".to_string()));    // 1
+        expected.quads.push(Quad::new(LESS.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "9".to_string()));    // 3
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2002".to_string(), "7001".to_string())); // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "0".to_string()));    // 5
+        expected.quads.push(Quad::new(PLUS.to_string(),   "1".to_string(),    "0".to_string(),    "7002".to_string())); // 6
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "1".to_string()));    // 7
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "2".to_string()));    // 8
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1642,9 +1703,9 @@ mod tests {
         // si (x < 3) { mientras (x < 2) haz { x = x + 1; }; };
         // idx: 0 = 0 _ x
         //      1 < x 3 t1        (if condition)
-        //      2 GOTOF t1 _ 8    (if false → past if-body, which is the whole while)
+        //      2 GOTOF t1 _ 8    (if false â†’ past if-body, which is the whole while)
         //      3 < x 2 t2        (while condition, loop start = 3)
-        //      4 GOTOF t2 _ 8    (while false → exit past loop)
+        //      4 GOTOF t2 _ 8    (while false â†’ exit past loop)
         //      5 + x 1 t3
         //      6 = t3 _ x
         //      7 GOTO _ _ 3      (while back to condition)
@@ -1664,15 +1725,16 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0 | cte 0=2000, 3=2001, 2=2002, 1=2003 | t1=7000, t2=7001, t3=7002
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
-        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "3".to_string(), "t1".to_string())); // 1
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "8".to_string()));  // 2
-        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "2".to_string(), "t2".to_string())); // 3
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t2".to_string(), "".to_string(),  "8".to_string()));  // 4
-        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "1".to_string(), "t3".to_string())); // 5
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),  "x".to_string()));  // 6
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "3".to_string()));  // 7
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));    // 0
+        expected.quads.push(Quad::new(LESS.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "8".to_string()));    // 2
+        expected.quads.push(Quad::new(LESS.to_string(),   "0".to_string(),    "2002".to_string(), "7001".to_string())); // 3
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7001".to_string(), "".to_string(),     "8".to_string()));    // 4
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2003".to_string(), "7002".to_string())); // 5
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "0".to_string()));    // 6
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "3".to_string()));    // 7
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1687,10 +1749,10 @@ mod tests {
         //      1 < x 4 t1        (while condition, loop start = 1)
         //      2 GOTOF t1 _ 11   (while exit)
         //      3 == x 2 t2       (if condition)
-        //      4 GOTOF t2 _ 8    (if false → else at 8)
+        //      4 GOTOF t2 _ 8    (if false â†’ else at 8)
         //      5 + x 10 t3       (if body)
         //      6 = t3 _ x
-        //      7 GOTO _ _ 10     (skip else → end of if/else = 10)
+        //      7 GOTO _ _ 10     (skip else â†’ end of if/else = 10)
         //      8 + x 1 t4        (else body)
         //      9 = t4 _ x
         //     10 GOTO _ _ 1      (while back-edge)
@@ -1712,18 +1774,19 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0 | cte 0=2000, 4=2001, 2=2002, 10=2003, 1=2004 | t1=7000, t2=7001, t3=7002, t4=7003
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
-        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "4".to_string(), "t1".to_string())); // 1
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "11".to_string())); // 2
-        expected.quads.push(Quad::new(EQUAL.to_string(),   "x".to_string(),  "2".to_string(), "t2".to_string())); // 3
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t2".to_string(), "".to_string(),  "8".to_string()));  // 4
-        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "10".to_string(),"t3".to_string())); // 5
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),  "x".to_string()));  // 6
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "10".to_string())); // 7
-        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "1".to_string(), "t4".to_string())); // 8
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t4".to_string(), "".to_string(),  "x".to_string()));  // 9
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "1".to_string()));  // 10
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));    // 0
+        expected.quads.push(Quad::new(LESS.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "11".to_string()));   // 2
+        expected.quads.push(Quad::new(EQUAL.to_string(),  "0".to_string(),    "2002".to_string(), "7001".to_string())); // 3
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7001".to_string(), "".to_string(),     "8".to_string()));    // 4
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2003".to_string(), "7002".to_string())); // 5
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "0".to_string()));    // 6
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "10".to_string()));   // 7
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2004".to_string(), "7003".to_string())); // 8
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7003".to_string(), "".to_string(),     "0".to_string()));    // 9
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "1".to_string()));    // 10
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1766,20 +1829,21 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0, y=1 | cte 0=2000, 2=2001, 1=2002, 3=2003, 99=2004 | t1=7000, t2=7001, t3=7002, t4=7003
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(),   "0".to_string(),  "".to_string(),  "x".to_string()));  // 0
-        expected.quads.push(Quad::new(ASSIGN.to_string(),   "0".to_string(),  "".to_string(),  "y".to_string()));  // 1
-        expected.quads.push(Quad::new(LESS.to_string(),     "x".to_string(),  "2".to_string(), "t1".to_string())); // 2
-        expected.quads.push(Quad::new(GOTOF.to_string(),    "t1".to_string(), "".to_string(),  "7".to_string()));  // 3
-        expected.quads.push(Quad::new(PLUS.to_string(),     "x".to_string(),  "1".to_string(), "t2".to_string())); // 4
-        expected.quads.push(Quad::new(ASSIGN.to_string(),   "t2".to_string(), "".to_string(),  "x".to_string()));  // 5
-        expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),   "".to_string(),  "2".to_string()));  // 6
-        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "y".to_string(),  "3".to_string(), "t3".to_string())); // 7
-        expected.quads.push(Quad::new(GOTOF.to_string(),    "t3".to_string(), "".to_string(),  "12".to_string())); // 8
-        expected.quads.push(Quad::new(PLUS.to_string(),     "y".to_string(),  "1".to_string(), "t4".to_string())); // 9
-        expected.quads.push(Quad::new(ASSIGN.to_string(),   "t4".to_string(), "".to_string(),  "y".to_string()));  // 10
-        expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),   "".to_string(),  "7".to_string()));  // 11
-        expected.quads.push(Quad::new(ASSIGN.to_string(),   "99".to_string(), "".to_string(),  "x".to_string()));  // 12
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "2000".to_string(), "".to_string(),     "0".to_string()));    // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "2000".to_string(), "".to_string(),     "1".to_string()));    // 1
+        expected.quads.push(Quad::new(LESS.to_string(),      "0".to_string(),    "2001".to_string(), "7000".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),     "7000".to_string(), "".to_string(),     "7".to_string()));    // 3
+        expected.quads.push(Quad::new(PLUS.to_string(),      "0".to_string(),    "2002".to_string(), "7001".to_string())); // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "7001".to_string(), "".to_string(),     "0".to_string()));    // 5
+        expected.quads.push(Quad::new(GOTO.to_string(),      "".to_string(),     "".to_string(),     "2".to_string()));    // 6
+        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "1".to_string(),    "2003".to_string(), "7002".to_string())); // 7
+        expected.quads.push(Quad::new(GOTOF.to_string(),     "7002".to_string(), "".to_string(),     "12".to_string()));   // 8
+        expected.quads.push(Quad::new(PLUS.to_string(),      "1".to_string(),    "2002".to_string(), "7003".to_string())); // 9
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "7003".to_string(), "".to_string(),     "1".to_string()));    // 10
+        expected.quads.push(Quad::new(GOTO.to_string(),      "".to_string(),     "".to_string(),     "7".to_string()));    // 11
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "2004".to_string(), "".to_string(),     "0".to_string()));    // 12
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1799,7 +1863,7 @@ mod tests {
         //   0 + a 1 t1
         //   1 = t1 _ b
         //   2 > b 0 t2
-        //   3 GOTOF t2 _ 6     (no else → skip if-body)
+        //   3 GOTOF t2 _ 6     (no else â†’ skip if-body)
         //   4 - b 1 t3
         //   5 = t3 _ b
         // main (indices continue at 6, temps reset to t1):
@@ -1824,16 +1888,19 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: f locals a=5000(param), b=5001 | main x(gint)=0
+        //            constants are global+shared: 1=2000, 0=2001, 5=2002
+        //            f temps t1=7000, t2=7001, t3=7002 (main temps reset, none used)
         let mut expected = Quadruples::new();
         // f
-        expected.quads.push(Quad::new(PLUS.to_string(),   "a".to_string(),  "1".to_string(), "t1".to_string())); // 0
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t1".to_string(), "".to_string(),  "b".to_string()));  // 1
-        expected.quads.push(Quad::new(MORE.to_string(),   "b".to_string(),  "0".to_string(), "t2".to_string())); // 2
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t2".to_string(), "".to_string(),  "6".to_string()));  // 3
-        expected.quads.push(Quad::new(SUBS.to_string(),   "b".to_string(),  "1".to_string(), "t3".to_string())); // 4
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(),  "b".to_string()));  // 5
+        expected.quads.push(Quad::new(PLUS.to_string(),   "5000".to_string(), "2000".to_string(), "7000".to_string())); // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "5001".to_string())); // 1
+        expected.quads.push(Quad::new(MORE.to_string(),   "5001".to_string(), "2001".to_string(), "7001".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7001".to_string(), "".to_string(),     "6".to_string()));    // 3
+        expected.quads.push(Quad::new(SUBS.to_string(),   "5001".to_string(), "2000".to_string(), "7002".to_string())); // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "5001".to_string())); // 5
         // main
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "5".to_string(),  "".to_string(),  "x".to_string()));  // 6
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "0".to_string()));    // 6
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1882,19 +1949,22 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: uno locals a=5000(param), i=5001 | dos locals b=5000(param), s=5001 | main y(gint)=0
+        //            constants global+shared: 0=2000, 1=2001, 2=2002, 7=2003
+        //            uno temps t1=7000, t2=7001 | dos temps reset t1=7000 | main temps reset
         let mut expected = Quadruples::new();
         // uno
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "i".to_string()));  // 0
-        expected.quads.push(Quad::new(LESS.to_string(),   "i".to_string(),  "a".to_string(), "t1".to_string())); // 1
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "6".to_string()));  // 2
-        expected.quads.push(Quad::new(PLUS.to_string(),   "i".to_string(),  "1".to_string(), "t2".to_string())); // 3
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),  "i".to_string()));  // 4
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "1".to_string()));  // 5
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "5001".to_string())); // 0
+        expected.quads.push(Quad::new(LESS.to_string(),   "5001".to_string(), "5000".to_string(), "7000".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "6".to_string()));    // 2
+        expected.quads.push(Quad::new(PLUS.to_string(),   "5001".to_string(), "2001".to_string(), "7001".to_string())); // 3
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "5001".to_string())); // 4
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "1".to_string()));    // 5
         // dos (temps reset)
-        expected.quads.push(Quad::new(MULTP.to_string(),  "b".to_string(),  "2".to_string(), "t1".to_string())); // 6
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t1".to_string(), "".to_string(),  "s".to_string()));  // 7
+        expected.quads.push(Quad::new(MULTP.to_string(),  "5000".to_string(), "2002".to_string(), "7000".to_string())); // 6
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "5001".to_string())); // 7
         // main (temps reset)
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "7".to_string(),  "".to_string(),  "y".to_string()));  // 8
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "0".to_string()));    // 8
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1911,9 +1981,9 @@ mod tests {
         //   1 = t1 _ r
         // b (indices continue at 2, temps reset to t1):
         //   2 == q 0 t1
-        //   3 GOTOF t1 _ 6     (if false → else at 6)
+        //   3 GOTOF t1 _ 6     (if false â†’ else at 6)
         //   4 = 1 _ r          (if body)
-        //   5 GOTO _ _ 7       (skip else → end 7)
+        //   5 GOTO _ _ 7       (skip else â†’ end 7)
         //   6 = 2 _ r          (else body)
         // c (indices continue at 7, temps reset to t1):
         //   7 > m 0 t1         (loop start = 7)
@@ -1960,25 +2030,28 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: a locals p=5000(param), r=5001 | b locals q=5000(param), r=5001 | c locals m=5000(param), r=5001 | main x(gint)=0
+        //            constants global+shared (first-seen): 1=2000, 0=2001, 2=2002
+        //            temps reset per scope: a t1=7000 | b t1=7000 | c t1=7000, t2=7001 | main none
         let mut expected = Quadruples::new();
         // a
-        expected.quads.push(Quad::new(PLUS.to_string(),   "p".to_string(),  "1".to_string(), "t1".to_string())); // 0
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t1".to_string(), "".to_string(),  "r".to_string()));  // 1
+        expected.quads.push(Quad::new(PLUS.to_string(),   "5000".to_string(), "2000".to_string(), "7000".to_string())); // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "5001".to_string())); // 1
         // b
-        expected.quads.push(Quad::new(EQUAL.to_string(),  "q".to_string(),  "0".to_string(), "t1".to_string())); // 2
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "6".to_string()));  // 3
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(),  "r".to_string()));  // 4
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "7".to_string()));  // 5
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "2".to_string(),  "".to_string(),  "r".to_string()));  // 6
+        expected.quads.push(Quad::new(EQUAL.to_string(),  "5000".to_string(), "2001".to_string(), "7000".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "6".to_string()));    // 3
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "5001".to_string())); // 4
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "7".to_string()));    // 5
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "5001".to_string())); // 6
         // c
-        expected.quads.push(Quad::new(MORE.to_string(),   "m".to_string(),  "0".to_string(), "t1".to_string())); // 7
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(),  "13".to_string())); // 8
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "m".to_string(),  "".to_string(),  "r".to_string()));  // 9
-        expected.quads.push(Quad::new(SUBS.to_string(),   "m".to_string(),  "1".to_string(), "t2".to_string())); // 10
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t2".to_string(), "".to_string(),  "m".to_string()));  // 11
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(),  "7".to_string()));  // 12
+        expected.quads.push(Quad::new(MORE.to_string(),   "5000".to_string(), "2001".to_string(), "7000".to_string())); // 7
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "13".to_string()));   // 8
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "5000".to_string(), "".to_string(),     "5001".to_string())); // 9
+        expected.quads.push(Quad::new(SUBS.to_string(),   "5000".to_string(), "2000".to_string(), "7001".to_string())); // 10
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "5000".to_string())); // 11
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "7".to_string()));    // 12
         // main
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(),  "x".to_string()));  // 13
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "0".to_string()));    // 13
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2007,9 +2080,10 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: main x(gint)=0 | cte 1=2000, 2=2001 | t1=7000
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(PLUS.to_string(),   "1".to_string(),  "2".to_string(), "t1".to_string())); // 0
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t1".to_string(), "".to_string(),  "x".to_string()));  // 1
+        expected.quads.push(Quad::new(PLUS.to_string(),   "2000".to_string(), "2001".to_string(), "7000".to_string())); // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "0".to_string()));    // 1
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2023,9 +2097,9 @@ mod tests {
         //
         // nested (indices 0.., temps t1..):
         //   0 > n 0 t1
-        //   1 GOTOF t1 _ 7     (if false → past if-body)
+        //   1 GOTOF t1 _ 7     (if false â†’ past if-body)
         //   2 < k n t2         (while loop start = 2)
-        //   3 GOTOF t2 _ 7     (while false → exit)
+        //   3 GOTOF t2 _ 7     (while false â†’ exit)
         //   4 + k 1 t3
         //   5 = t3 _ k
         //   6 GOTO _ _ 2
@@ -2058,21 +2132,24 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: nested locals n=5000(param), k=5001 | main x(gint)=0
+        //            constants global+shared (first-seen): 0=2000, 1=2001
+        //            nested temps t1=7000, t2=7001, t3=7002 | main temps reset t1=7000, t2=7001
         let mut expected = Quadruples::new();
         // nested
-        expected.quads.push(Quad::new(MORE.to_string(),     "n".to_string(),  "0".to_string(), "t1".to_string())); // 0
-        expected.quads.push(Quad::new(GOTOF.to_string(),    "t1".to_string(), "".to_string(),  "7".to_string()));  // 1
-        expected.quads.push(Quad::new(LESS.to_string(),     "k".to_string(),  "n".to_string(), "t2".to_string())); // 2
-        expected.quads.push(Quad::new(GOTOF.to_string(),    "t2".to_string(), "".to_string(),  "7".to_string()));  // 3
-        expected.quads.push(Quad::new(PLUS.to_string(),     "k".to_string(),  "1".to_string(), "t3".to_string())); // 4
-        expected.quads.push(Quad::new(ASSIGN.to_string(),   "t3".to_string(), "".to_string(),  "k".to_string()));  // 5
-        expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),   "".to_string(),  "2".to_string()));  // 6
+        expected.quads.push(Quad::new(MORE.to_string(),      "5000".to_string(), "2000".to_string(), "7000".to_string())); // 0
+        expected.quads.push(Quad::new(GOTOF.to_string(),     "7000".to_string(), "".to_string(),     "7".to_string()));    // 1
+        expected.quads.push(Quad::new(LESS.to_string(),      "5001".to_string(), "5000".to_string(), "7001".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),     "7001".to_string(), "".to_string(),     "7".to_string()));    // 3
+        expected.quads.push(Quad::new(PLUS.to_string(),      "5001".to_string(), "2001".to_string(), "7002".to_string())); // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "7002".to_string(), "".to_string(),     "5001".to_string())); // 5
+        expected.quads.push(Quad::new(GOTO.to_string(),      "".to_string(),     "".to_string(),     "2".to_string()));    // 6
         // main (temps reset)
-        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "x".to_string(),  "0".to_string(), "t1".to_string())); // 7
-        expected.quads.push(Quad::new(GOTOF.to_string(),    "t1".to_string(), "".to_string(),  "12".to_string())); // 8
-        expected.quads.push(Quad::new(SUBS.to_string(),     "x".to_string(),  "1".to_string(), "t2".to_string())); // 9
-        expected.quads.push(Quad::new(ASSIGN.to_string(),   "t2".to_string(), "".to_string(),  "x".to_string()));  // 10
-        expected.quads.push(Quad::new(GOTO.to_string(),     "".to_string(),   "".to_string(),  "7".to_string()));  // 11
+        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "0".to_string(),    "2000".to_string(), "7000".to_string())); // 7
+        expected.quads.push(Quad::new(GOTOF.to_string(),     "7000".to_string(), "".to_string(),     "12".to_string()));   // 8
+        expected.quads.push(Quad::new(SUBS.to_string(),      "0".to_string(),    "2001".to_string(), "7001".to_string())); // 9
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "7001".to_string(), "".to_string(),     "0".to_string()));    // 10
+        expected.quads.push(Quad::new(GOTO.to_string(),      "".to_string(),     "".to_string(),     "7".to_string()));    // 11
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2104,12 +2181,13 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0 | cte 5=2000, 1=2001 | literal 'val:'=4000 | t1=7000
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "5".to_string(), "".to_string(), "x".to_string()));        // 0
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),  "".to_string(), "'val:'".to_string()));   // 1
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),  "".to_string(), "x".to_string()));        // 2
-        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(), "1".to_string(), "t1".to_string()));      // 3
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),  "".to_string(), "t1".to_string()));       // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));    // 0
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4000".to_string())); // 1
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 2
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string())); // 3
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "7000".to_string())); // 4
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2137,12 +2215,13 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0 | cte 3=2000, 0=2001 | literal 'pos'=4000 | t1=7000
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "3".to_string(),  "".to_string(), "x".to_string()));    // 0
-        expected.quads.push(Quad::new(MORE.to_string(),   "x".to_string(),  "0".to_string(), "t1".to_string()));  // 1
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(), "5".to_string()));    // 2
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "'pos'".to_string())); // 3
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "x".to_string()));    // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));    // 0
+        expected.quads.push(Quad::new(MORE.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "5".to_string()));    // 2
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4000".to_string())); // 3
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 4
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2174,15 +2253,16 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0 | cte 0=2000, 3=2001, 2=2002, 1=2003 | t1=7000, t2=7001, t3=7002
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "0".to_string(),  "".to_string(), "x".to_string()));    // 0
-        expected.quads.push(Quad::new(LESS.to_string(),   "x".to_string(),  "3".to_string(), "t1".to_string()));  // 1
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(), "8".to_string()));    // 2
-        expected.quads.push(Quad::new(MULTP.to_string(),  "x".to_string(),  "2".to_string(), "t2".to_string()));  // 3
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "t2".to_string()));   // 4
-        expected.quads.push(Quad::new(PLUS.to_string(),   "x".to_string(),  "1".to_string(), "t3".to_string()));  // 5
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "t3".to_string(), "".to_string(), "x".to_string()));    // 6
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(), "1".to_string()));    // 7
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));    // 0
+        expected.quads.push(Quad::new(LESS.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "8".to_string()));    // 2
+        expected.quads.push(Quad::new(MULTP.to_string(),  "0".to_string(),    "2002".to_string(), "7001".to_string())); // 3
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "7001".to_string())); // 4
+        expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2003".to_string(), "7002".to_string())); // 5
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "0".to_string()));    // 6
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "1".to_string()));    // 7
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2214,14 +2294,15 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: x(gint)=0 | cte 1=2000 | literals 'one'=4000, 'other'=4001 | t1=7000
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),  "".to_string(), "x".to_string()));      // 0
-        expected.quads.push(Quad::new(EQUAL.to_string(),  "x".to_string(),  "1".to_string(), "t1".to_string()));    // 1
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(), "5".to_string()));      // 2
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "'one'".to_string()));  // 3
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),   "".to_string(), "7".to_string()));      // 4
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "'other'".to_string())); // 5
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "x".to_string()));      // 6
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));    // 0
+        expected.quads.push(Quad::new(EQUAL.to_string(),  "0".to_string(),    "2000".to_string(), "7000".to_string())); // 1
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "5".to_string()));    // 2
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4000".to_string())); // 3
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "7".to_string()));    // 4
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4001".to_string())); // 5
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 6
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2263,19 +2344,581 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.compile_program(program).unwrap();
 
+        // Addresses: log local n=5000(param) | main x(gint)=0
+        //            constants global+shared (first-seen): literal 'n='=4000, int 0=2000, int 1=2001, literal 'start'=4001, int 9=2002
+        //            log temps t1=7000, t2=7001 | main temps reset (none)
         let mut expected = Quadruples::new();
         // log
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "'n='".to_string()));   // 0
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "n".to_string()));      // 1
-        expected.quads.push(Quad::new(MORE.to_string(),   "n".to_string(),  "0".to_string(), "t1".to_string()));    // 2
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "t1".to_string(), "".to_string(), "6".to_string()));      // 3
-        expected.quads.push(Quad::new(SUBS.to_string(),   "n".to_string(),  "1".to_string(), "t2".to_string()));    // 4
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "t2".to_string()));     // 5
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4000".to_string())); // 0
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "5000".to_string())); // 1
+        expected.quads.push(Quad::new(MORE.to_string(),   "5000".to_string(), "2000".to_string(), "7000".to_string())); // 2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "6".to_string()));    // 3
+        expected.quads.push(Quad::new(SUBS.to_string(),   "5000".to_string(), "2001".to_string(), "7001".to_string())); // 4
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "7001".to_string())); // 5
         // main (temps reset)
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "'start'".to_string())); // 6
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "9".to_string(),  "".to_string(), "x".to_string()));      // 7
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),   "".to_string(), "x".to_string()));      // 8
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4001".to_string())); // 6
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "0".to_string()));    // 7
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 8
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
+
+    // ! Large integration tests: each program has 3 functions + main, with >=5 int,
+    // ! >=5 float and >=5 literal constants. Variable counts and addresses are computed
+    // ! LOGICALLY from the class notes BEFORE writing, then verified against the compiler.
+    //
+    // Addressing recap (from notes + constants.rs):
+    //   global int 0+, global float 1000+ | cte int 2000+, cte float 3000+, literal 4000+
+    //   local int 5000+, local float 6000+ | temp int 7000+, temp float 8000+
+    // A non-'nula' function adds a global variable named after it (typed as its return),
+    // inserted when the function is processed (after the global vars, in source order).
+    // int_count/float_count = # local vars of that type (params count as locals).
+    // temp_int_count/temp_float_count = # temporals of that type used in the scope.
+
+    #[test]
+    fn test_big_program_1() {
+        // Manual analysis BEFORE looking at output:
+        //   global vars: ga(int)=0, gb(int)=1, gf(float)=1000
+        //   returns added to global: suma(entero) -> int #2 = 2 ; promedio(flotante) -> float #1 = 1001
+        //     => global int_count = 3 (ga, gb, suma), float_count = 2 (gf, promedio)
+        //   suma(a,b:entero): a=5000, b=5001 -> int_count 2, float 0 ; temps: t1(+) int -> temp_int 1
+        //   promedio(x,y:flotante): x=6000, y=6001 -> float_count 2, int 0 ; temps t1(+),t2(/) float -> temp_float 2
+        //   imprime(n:entero) vars i:entero: n=5000, i=5001 -> int_count 2, float 0 ; temps t1(<),t2(+) int -> temp_int 2
+        //   global temps: assignments are direct constants, escribe has no expr -> temp_int 0, temp_float 0
+        //   constants: int 10,20,0,1 ; float 2.5,3.14 ; literal 'suma','prom','iter','fin'
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa big1;
+            vars
+                ga, gb : entero;
+                gf : flotante;
+            entero suma(a : entero, b : entero) {
+                {
+                    a = a + b;
+                    escribe('suma');
+                }
+            };
+            flotante promedio(x : flotante, y : flotante) {
+                {
+                    x = x + y;
+                    x = x / 2.5;
+                    escribe('prom', x);
+                }
+            };
+            nula imprime(n : entero) {
+                vars i : entero;
+                {
+                    i = 0;
+                    mientras (i < n) haz {
+                        escribe('iter', i);
+                        i = i + 1;
+                    };
+                }
+            };
+            inicio {
+                ga = 10;
+                gb = 20;
+                gf = 3.14;
+                escribe('fin', ga, gb);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        // suma
+        let suma = dir.get("suma").unwrap();
+        assert_eq!(suma.parameters, vec!["entero".to_string(), "entero".to_string()]);
+        assert_eq!(suma.int_count, 2);
+        assert_eq!(suma.float_count, 0);
+        assert_eq!(suma.temp_int_count, 1);
+        assert_eq!(suma.temp_float_count, 0);
+        assert_eq!(suma.var_directory.get("a").unwrap().address, 5000);
+        assert_eq!(suma.var_directory.get("b").unwrap().address, 5001);
+
+        // promedio
+        let promedio = dir.get("promedio").unwrap();
+        assert_eq!(promedio.parameters, vec!["flotante".to_string(), "flotante".to_string()]);
+        assert_eq!(promedio.int_count, 0);
+        assert_eq!(promedio.float_count, 2);
+        assert_eq!(promedio.temp_int_count, 0);
+        assert_eq!(promedio.temp_float_count, 2);
+        assert_eq!(promedio.var_directory.get("x").unwrap().address, 6000);
+        assert_eq!(promedio.var_directory.get("y").unwrap().address, 6001);
+
+        // imprime
+        let imprime = dir.get("imprime").unwrap();
+        assert_eq!(imprime.parameters, vec!["entero".to_string()]);
+        assert_eq!(imprime.int_count, 2);
+        assert_eq!(imprime.float_count, 0);
+        assert_eq!(imprime.temp_int_count, 2);
+        assert_eq!(imprime.temp_float_count, 0);
+        assert_eq!(imprime.var_directory.get("n").unwrap().address, 5000);
+        assert_eq!(imprime.var_directory.get("i").unwrap().address, 5001);
+
+        // global
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 3);   // ga, gb, suma(return)
+        assert_eq!(global.float_count, 2); // gf, promedio(return)
+        assert_eq!(global.temp_int_count, 0);
+        assert_eq!(global.temp_float_count, 0);
+        assert_eq!(global.var_directory.get("ga").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("gb").unwrap().address, 1);
+        assert_eq!(global.var_directory.get("suma").unwrap().address, 2);
+        assert_eq!(global.var_directory.get("gf").unwrap().address, 1000);
+        assert_eq!(global.var_directory.get("promedio").unwrap().address, 1001);
+    }
+
+    #[test]
+    fn test_big_program_2() {
+        // Manual analysis BEFORE looking at output:
+        //   NOTE: comparisons (>,<,==,!=) yield an ENTERO temp even on float operands.
+        //   global vars: contador(int)=0, total(float)=1000, promedio(float)=1001
+        //   returns: calcular(flotante) -> float #2 = 1002 ; contar_pares(entero) -> int #1 = 1 ; reporte nula -> none
+        //     => global int_count = 2 (contador, contar_pares), float_count = 3 (total, promedio, calcular)
+        //   global temps: 'total / 4.0' -> float t1 -> temp_float 1, temp_int 0
+        //   calcular(base,factor:flotante) vars temp_res:flotante:
+        //     base=6000, factor=6001, temp_res=6002 -> float_count 3, int 0
+        //     temps: *(float), >(int), +(float) -> temp_float 2, temp_int 1
+        //   contar_pares(limite:entero) vars c,num:entero:
+        //     limite=5000, c=5001, num=5002 -> int_count 3, float 0
+        //     temps: <,==,+,+ all int -> temp_int 4, temp_float 0
+        //   reporte(valor:flotante):
+        //     valor=6000 -> float_count 1, int 0 ; temps: <(int) -> temp_int 1, temp_float 0
+        //   constants: int 0,2,1,5,6 ; float 1.5,0.0,100.0,4.0,2.5 ; literal 'calc','pares','neg','pos','listo'
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa big2;
+            vars
+                contador : entero;
+                total, promedio : flotante;
+            flotante calcular(base : flotante, factor : flotante) {
+                vars temp_res : flotante;
+                {
+                    temp_res = base * factor;
+                    si (base > 1.5) {
+                        temp_res = temp_res + factor;
+                    };
+                    escribe('calc', temp_res);
+                }
+            };
+            entero contar_pares(limite : entero) {
+                vars c, num : entero;
+                {
+                    c = 0;
+                    num = 0;
+                    mientras (num < limite) haz {
+                        si (num == 2) {
+                            c = c + 1;
+                        };
+                        num = num + 6;
+                    };
+                    escribe('pares', c);
+                }
+            };
+            nula reporte(valor : flotante) {
+                {
+                    si (valor < 0.0) {
+                        escribe('neg');
+                    } sino {
+                        escribe('pos', valor);
+                    };
+                }
+            };
+            inicio {
+                contador = 5;
+                total = 100.0;
+                promedio = total / 4.0;
+                escribe('listo', contador, total, 2.5);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let calcular = dir.get("calcular").unwrap();
+        assert_eq!(calcular.parameters, vec!["flotante".to_string(), "flotante".to_string()]);
+        assert_eq!(calcular.int_count, 0);
+        assert_eq!(calcular.float_count, 3);
+        assert_eq!(calcular.temp_int_count, 1);
+        assert_eq!(calcular.temp_float_count, 2);
+        assert_eq!(calcular.var_directory.get("base").unwrap().address, 6000);
+        assert_eq!(calcular.var_directory.get("factor").unwrap().address, 6001);
+        assert_eq!(calcular.var_directory.get("temp_res").unwrap().address, 6002);
+
+        let contar = dir.get("contar_pares").unwrap();
+        assert_eq!(contar.parameters, vec!["entero".to_string()]);
+        assert_eq!(contar.int_count, 3);
+        assert_eq!(contar.float_count, 0);
+        assert_eq!(contar.temp_int_count, 4);
+        assert_eq!(contar.temp_float_count, 0);
+        assert_eq!(contar.var_directory.get("limite").unwrap().address, 5000);
+        assert_eq!(contar.var_directory.get("c").unwrap().address, 5001);
+        assert_eq!(contar.var_directory.get("num").unwrap().address, 5002);
+
+        let reporte = dir.get("reporte").unwrap();
+        assert_eq!(reporte.parameters, vec!["flotante".to_string()]);
+        assert_eq!(reporte.int_count, 0);
+        assert_eq!(reporte.float_count, 1);
+        assert_eq!(reporte.temp_int_count, 1);
+        assert_eq!(reporte.temp_float_count, 0);
+        assert_eq!(reporte.var_directory.get("valor").unwrap().address, 6000);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 2);   // contador, contar_pares(return)
+        assert_eq!(global.float_count, 3); // total, promedio, calcular(return)
+        assert_eq!(global.temp_int_count, 0);
+        assert_eq!(global.temp_float_count, 1); // total / 4.0
+        assert_eq!(global.var_directory.get("contador").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("contar_pares").unwrap().address, 1);
+        assert_eq!(global.var_directory.get("total").unwrap().address, 1000);
+        assert_eq!(global.var_directory.get("promedio").unwrap().address, 1001);
+        assert_eq!(global.var_directory.get("calcular").unwrap().address, 1002);
+    }
+
+    #[test]
+    fn test_big_program_3() {
+        // Manual analysis BEFORE looking at output:
+        //   global vars: g1(int)=0, g2(int)=1, gx(float)=1000, gy(float)=1001
+        //   returns (source order): procesar nula -> none ; fibonacci(entero) -> int #2 = 2 ; area(flotante) -> float #2 = 1002
+        //     => global int_count = 3 (g1, g2, fibonacci), float_count = 3 (gx, gy, area)
+        //   global temps: 'gx + 1.5' -> float -> temp_float 1, temp_int 0
+        //   procesar(p:entero, q:flotante) vars r:entero, s:flotante:
+        //     p=5000, r=5001 (int) ; q=6000, s=6001 (float) -> int_count 2, float_count 2
+        //     temps: +(int), *(float) -> temp_int 1, temp_float 1
+        //   fibonacci(num:entero) vars a,b:entero:
+        //     num=5000, a=5001, b=5002 -> int_count 3, float 0
+        //     temps: >,+,- all int -> temp_int 3, temp_float 0
+        //   area(radio:flotante) vars resultado:flotante:
+        //     radio=6000, resultado=6001 -> float_count 2, int 0
+        //     temps: *(float), *(float), >(int) -> temp_float 2, temp_int 1
+        //   constants: int 1,0,7,8,9 ; float 2.0,3.14159,100.0,5.5,1.5 ; literal 'proc','fib','grande','area','done'
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa big3;
+            vars
+                g1, g2 : entero;
+                gx, gy : flotante;
+            nula procesar(p : entero, q : flotante) {
+                vars
+                    r : entero;
+                    s : flotante;
+                {
+                    r = p + 1;
+                    s = q * 2.0;
+                    escribe('proc');
+                }
+            };
+            entero fibonacci(num : entero) {
+                vars a, b : entero;
+                {
+                    a = 0;
+                    b = 1;
+                    mientras (num > 0) haz {
+                        a = a + b;
+                        num = num - 1;
+                    };
+                    escribe('fib', a);
+                }
+            };
+            flotante area(radio : flotante) {
+                vars resultado : flotante;
+                {
+                    resultado = radio * radio;
+                    resultado = resultado * 3.14159;
+                    si (resultado > 100.0) {
+                        escribe('grande');
+                    };
+                    escribe('area', resultado);
+                }
+            };
+            inicio {
+                g1 = 7;
+                g2 = 8;
+                gx = 5.5;
+                gy = gx + 1.5;
+                escribe('done', g1, gy, 9);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let procesar = dir.get("procesar").unwrap();
+        assert_eq!(procesar.parameters, vec!["entero".to_string(), "flotante".to_string()]);
+        assert_eq!(procesar.int_count, 2);
+        assert_eq!(procesar.float_count, 2);
+        assert_eq!(procesar.temp_int_count, 1);
+        assert_eq!(procesar.temp_float_count, 1);
+        assert_eq!(procesar.var_directory.get("p").unwrap().address, 5000);
+        assert_eq!(procesar.var_directory.get("r").unwrap().address, 5001);
+        assert_eq!(procesar.var_directory.get("q").unwrap().address, 6000);
+        assert_eq!(procesar.var_directory.get("s").unwrap().address, 6001);
+
+        let fib = dir.get("fibonacci").unwrap();
+        assert_eq!(fib.parameters, vec!["entero".to_string()]);
+        assert_eq!(fib.int_count, 3);
+        assert_eq!(fib.float_count, 0);
+        assert_eq!(fib.temp_int_count, 3);
+        assert_eq!(fib.temp_float_count, 0);
+        assert_eq!(fib.var_directory.get("num").unwrap().address, 5000);
+        assert_eq!(fib.var_directory.get("a").unwrap().address, 5001);
+        assert_eq!(fib.var_directory.get("b").unwrap().address, 5002);
+
+        let area = dir.get("area").unwrap();
+        assert_eq!(area.parameters, vec!["flotante".to_string()]);
+        assert_eq!(area.int_count, 0);
+        assert_eq!(area.float_count, 2);
+        assert_eq!(area.temp_int_count, 1);
+        assert_eq!(area.temp_float_count, 2);
+        assert_eq!(area.var_directory.get("radio").unwrap().address, 6000);
+        assert_eq!(area.var_directory.get("resultado").unwrap().address, 6001);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 3);   // g1, g2, fibonacci(return)
+        assert_eq!(global.float_count, 3); // gx, gy, area(return)
+        assert_eq!(global.temp_int_count, 0);
+        assert_eq!(global.temp_float_count, 1); // gx + 1.5
+        assert_eq!(global.var_directory.get("g1").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("g2").unwrap().address, 1);
+        assert_eq!(global.var_directory.get("fibonacci").unwrap().address, 2);
+        assert_eq!(global.var_directory.get("gx").unwrap().address, 1000);
+        assert_eq!(global.var_directory.get("gy").unwrap().address, 1001);
+        assert_eq!(global.var_directory.get("area").unwrap().address, 1002);
+    }
+
+    #[test]
+    fn test_big_program_4() {
+        // Manual analysis BEFORE looking at output:
+        //   global vars: acc(int)=0, media(float)=1000
+        //   returns (source order): maximo(entero) -> int #1 = 1 ; escalar(flotante) -> float #1 = 1001 ; clasificar nula -> none
+        //     => global int_count = 2 (acc, maximo), float_count = 2 (media, escalar)
+        //   global temps: 'acc + 5' int, 'media / 2.0' float -> temp_int 1, temp_float 1
+        //   maximo(a,b,c:entero) vars max:entero:
+        //     a=5000, b=5001, c=5002, max=5003 -> int_count 4, float 0
+        //     temps: >,> int -> temp_int 2, temp_float 0
+        //   escalar(v1,v2,factor:flotante):
+        //     v1=6000, v2=6001, factor=6002 -> float_count 3, int 0
+        //     temps: *,* float -> temp_float 2, temp_int 0
+        //   clasificar(valor:entero) vars nivel:entero:
+        //     valor=5000, nivel=5001 -> int_count 2, float 0
+        //     temps: >,-,+,== all int -> temp_int 4, temp_float 0
+        //   constants: int 0,10,1,100,5,99 ; float 50.5,2.0,1.1,3.3,4.4 ; literal 'max','esc','bajo','alto','total','extra'
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa big4;
+            vars
+                acc : entero;
+                media : flotante;
+            entero maximo(a : entero, b : entero, c : entero) {
+                vars max : entero;
+                {
+                    max = a;
+                    si (b > max) {
+                        max = b;
+                    };
+                    si (c > max) {
+                        max = c;
+                    };
+                    escribe('max', max);
+                }
+            };
+            flotante escalar(v1 : flotante, v2 : flotante, factor : flotante) {
+                {
+                    v1 = v1 * factor;
+                    v2 = v2 * factor;
+                    escribe('esc', v1, v2);
+                }
+            };
+            nula clasificar(valor : entero) {
+                vars nivel : entero;
+                {
+                    nivel = 0;
+                    mientras (valor > 10) haz {
+                        valor = valor - 10;
+                        nivel = nivel + 1;
+                    };
+                    si (nivel == 0) {
+                        escribe('bajo');
+                    } sino {
+                        escribe('alto', nivel);
+                    };
+                }
+            };
+            inicio {
+                acc = 100;
+                media = 50.5;
+                acc = acc + 5;
+                media = media / 2.0;
+                escribe('total', acc, media, 'extra', 1.1, 99, 3.3, 4.4);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let maximo = dir.get("maximo").unwrap();
+        assert_eq!(maximo.parameters, vec!["entero".to_string(), "entero".to_string(), "entero".to_string()]);
+        assert_eq!(maximo.int_count, 4);
+        assert_eq!(maximo.float_count, 0);
+        assert_eq!(maximo.temp_int_count, 2);
+        assert_eq!(maximo.temp_float_count, 0);
+        assert_eq!(maximo.var_directory.get("a").unwrap().address, 5000);
+        assert_eq!(maximo.var_directory.get("b").unwrap().address, 5001);
+        assert_eq!(maximo.var_directory.get("c").unwrap().address, 5002);
+        assert_eq!(maximo.var_directory.get("max").unwrap().address, 5003);
+
+        let escalar = dir.get("escalar").unwrap();
+        assert_eq!(escalar.parameters, vec!["flotante".to_string(), "flotante".to_string(), "flotante".to_string()]);
+        assert_eq!(escalar.int_count, 0);
+        assert_eq!(escalar.float_count, 3);
+        assert_eq!(escalar.temp_int_count, 0);
+        assert_eq!(escalar.temp_float_count, 2);
+        assert_eq!(escalar.var_directory.get("v1").unwrap().address, 6000);
+        assert_eq!(escalar.var_directory.get("v2").unwrap().address, 6001);
+        assert_eq!(escalar.var_directory.get("factor").unwrap().address, 6002);
+
+        let clasificar = dir.get("clasificar").unwrap();
+        assert_eq!(clasificar.parameters, vec!["entero".to_string()]);
+        assert_eq!(clasificar.int_count, 2);
+        assert_eq!(clasificar.float_count, 0);
+        assert_eq!(clasificar.temp_int_count, 4);
+        assert_eq!(clasificar.temp_float_count, 0);
+        assert_eq!(clasificar.var_directory.get("valor").unwrap().address, 5000);
+        assert_eq!(clasificar.var_directory.get("nivel").unwrap().address, 5001);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 2);   // acc, maximo(return)
+        assert_eq!(global.float_count, 2); // media, escalar(return)
+        assert_eq!(global.temp_int_count, 1);   // acc + 5
+        assert_eq!(global.temp_float_count, 1); // media / 2.0
+        assert_eq!(global.var_directory.get("acc").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("maximo").unwrap().address, 1);
+        assert_eq!(global.var_directory.get("media").unwrap().address, 1000);
+        assert_eq!(global.var_directory.get("escalar").unwrap().address, 1001);
+    }
+
+    #[test]
+    fn test_big_program_5() {
+        // Manual analysis BEFORE looking at output:
+        //   global vars: estado(int)=0, indice(int)=1, factor_global(float)=1000
+        //   returns (source order): acumular(entero) -> int #2 = 2 ; interpolar(flotante) -> float #1 = 1001 ; validar nula -> none
+        //     => global int_count = 3 (estado, indice, acumular), float_count = 2 (factor_global, interpolar)
+        //   global temps: while > (int), + (int), - (int), then * (float)
+        //       -> temp_int 3, temp_float 1
+        //   acumular(inicio_v,fin_v:entero) vars suma,k:entero:
+        //     inicio_v=5000, fin_v=5001, suma=5002, k=5003 -> int_count 4, float 0
+        //     temps: <,+,+ all int -> temp_int 3, temp_float 0
+        //   interpolar(inicio_f,fin_f,paso:flotante) vars valor:flotante:
+        //     inicio_f=6000, fin_f=6001, paso=6002, valor=6003 -> float_count 4, int 0
+        //     temps: >(int), <(int), +(float) -> temp_int 2, temp_float 1
+        //   validar(dato,umbral:entero):
+        //     dato=5000, umbral=5001 -> int_count 2, float 0
+        //     temps: >,> int -> temp_int 2, temp_float 0
+        //   constants: int 0,1,100,50,5,200 ; float 0.0,2.5,1.5,7.7,8.8 ; literal 'acum','paso','interp','muy_alto','alto','normal','global_fin'
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa big5;
+            vars
+                estado, indice : entero;
+                factor_global : flotante;
+            entero acumular(inicio_v : entero, fin_v : entero) {
+                vars suma, k : entero;
+                {
+                    suma = 0;
+                    k = inicio_v;
+                    mientras (k < fin_v) haz {
+                        suma = suma + k;
+                        k = k + 1;
+                    };
+                    escribe('acum', suma);
+                }
+            };
+            flotante interpolar(inicio_f : flotante, fin_f : flotante, paso : flotante) {
+                vars valor : flotante;
+                {
+                    valor = inicio_f;
+                    si (paso > 0.0) {
+                        mientras (valor < fin_f) haz {
+                            valor = valor + paso;
+                            escribe('paso', valor);
+                        };
+                    };
+                    escribe('interp', valor);
+                }
+            };
+            nula validar(dato : entero, umbral : entero) {
+                {
+                    si (dato > umbral) {
+                        si (dato > 100) {
+                            escribe('muy_alto');
+                        } sino {
+                            escribe('alto');
+                        };
+                    } sino {
+                        escribe('normal', dato);
+                    };
+                }
+            };
+            inicio {
+                estado = 1;
+                indice = 50;
+                factor_global = 2.5;
+                mientras (indice > 0) haz {
+                    estado = estado + indice;
+                    indice = indice - 5;
+                };
+                factor_global = factor_global * 1.5;
+                escribe('global_fin', estado, factor_global, 7.7, 200, 8.8);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let acumular = dir.get("acumular").unwrap();
+        assert_eq!(acumular.parameters, vec!["entero".to_string(), "entero".to_string()]);
+        assert_eq!(acumular.int_count, 4);
+        assert_eq!(acumular.float_count, 0);
+        assert_eq!(acumular.temp_int_count, 3);
+        assert_eq!(acumular.temp_float_count, 0);
+        assert_eq!(acumular.var_directory.get("inicio_v").unwrap().address, 5000);
+        assert_eq!(acumular.var_directory.get("fin_v").unwrap().address, 5001);
+        assert_eq!(acumular.var_directory.get("suma").unwrap().address, 5002);
+        assert_eq!(acumular.var_directory.get("k").unwrap().address, 5003);
+
+        let interpolar = dir.get("interpolar").unwrap();
+        assert_eq!(interpolar.parameters, vec!["flotante".to_string(), "flotante".to_string(), "flotante".to_string()]);
+        assert_eq!(interpolar.int_count, 0);
+        assert_eq!(interpolar.float_count, 4);
+        assert_eq!(interpolar.temp_int_count, 2);
+        assert_eq!(interpolar.temp_float_count, 1);
+        assert_eq!(interpolar.var_directory.get("inicio_f").unwrap().address, 6000);
+        assert_eq!(interpolar.var_directory.get("fin_f").unwrap().address, 6001);
+        assert_eq!(interpolar.var_directory.get("paso").unwrap().address, 6002);
+        assert_eq!(interpolar.var_directory.get("valor").unwrap().address, 6003);
+
+        let validar = dir.get("validar").unwrap();
+        assert_eq!(validar.parameters, vec!["entero".to_string(), "entero".to_string()]);
+        assert_eq!(validar.int_count, 2);
+        assert_eq!(validar.float_count, 0);
+        assert_eq!(validar.temp_int_count, 2);
+        assert_eq!(validar.temp_float_count, 0);
+        assert_eq!(validar.var_directory.get("dato").unwrap().address, 5000);
+        assert_eq!(validar.var_directory.get("umbral").unwrap().address, 5001);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 3);   // estado, indice, acumular(return)
+        assert_eq!(global.float_count, 2); // factor_global, interpolar(return)
+        assert_eq!(global.temp_int_count, 3);   // >, +, -
+        assert_eq!(global.temp_float_count, 1); // *
+        assert_eq!(global.var_directory.get("estado").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("indice").unwrap().address, 1);
+        assert_eq!(global.var_directory.get("acumular").unwrap().address, 2);
+        assert_eq!(global.var_directory.get("factor_global").unwrap().address, 1000);
+        assert_eq!(global.var_directory.get("interpolar").unwrap().address, 1001);
+    }
+
 }
+
+

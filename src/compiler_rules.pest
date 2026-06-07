@@ -53,7 +53,7 @@ ARITH_OP = { "+" | "-" }
 MULT_OP = { "*" | "/" }
 CTE = { cte_flot | cte_ent }
 
-KEYWORD = @{ ("si" | "sino" | "vars" | "entero" | "flotante" | "nula" | "inicio" | "fin" | "programa" | "mientras" | "haz" | "escribe") ~ !ASCII_ALPHANUMERIC } // keywords son las variables que no se consideran como id
+KEYWORD = @{ ("si" | "sino" | "vars" | "entero" | "flotante" | "nula" | "inicio" | "fin" | "programa" | "mientras" | "haz" | "escribe") ~ !(ASCII_ALPHANUMERIC | "_") } // keywords son las variables que no se consideran como id
 ID = @{ !KEYWORD ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* } // una letra seguida por numeros/letra/guion
 // i.e. hola2, a_2sa
 // se usa '@' sugerencia de claude para que el id no tenga espacios dentro
