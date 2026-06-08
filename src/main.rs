@@ -95,8 +95,30 @@ fn main() {
         fin
     ";
 
+    let fibonacci_double = "
+        programa fibrec;
+        vars
+            r : entero;
+        entero fibonacci(n : entero) {
+            vars res : entero;
+            {
+                si (n < 2) {
+                    res = n;
+                } sino {
+                    res = fibonacci(n - 1) + fibonacci(n - 2);
+                };
+            }
+            return res;
+        };
+        inicio {
+            r = fibonacci(10);
+            escribe('fib', r);
+        }
+        fin
+    ";
+
     let mut compiler = Compiler::new();
-    if compiler.compile_program(fibonacci_func).is_ok() {
+    if compiler.compile_program(fibonacci_double).is_ok() {
         ObjWriter::new(&compiler).write_to_file("program.obj").unwrap();
 
         // Load the obj file back into the Virtual Machine and run it.
