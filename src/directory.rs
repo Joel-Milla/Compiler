@@ -32,7 +32,7 @@ impl VarEntry {
 #[derive(Debug, PartialEq)]
 pub struct FuncEntry {
     pub func_type: String,
-    pub var_directory: HashMap<String, VarEntry>, // (name, value) of variable
+    pub var_directory: HashMap<String, VarEntry>, // (address, value) of variable
     pub parameters : Vec<String>,
     pub starting_quad : usize,
     pub int_count : usize,
