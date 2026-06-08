@@ -27,9 +27,6 @@ pub struct VirtualMachine {
     // Variables needed for calling stack
     call_stack : Vec<Memory>,
     return_stack : Vec<usize>,
-    // Stacks of frames/names being built between ERA and GOSUB.
-    // They are stacks (not single values) so nested calls work,
-    // e.g. escala(ajustar(20.0), 1.5).
     pending_frames : Vec<Memory>,
     pending_functs : Vec<String>,
 }
@@ -54,10 +51,10 @@ impl VirtualMachine {
         self.fill_values_with(file)?;
         self.set_constants()?;
         self.call_stack.push(Memory::new());
-        // Instruction Pointer: index of the quad currently being executed.
-        let mut ip : usize = self.directory.functions.get(GLOBAL).unwrap().starting_quad;
+ 
+        let mut ip : usize = self.directory.functions.get(GLOBAL).unwrap().starting_quad; // execution pointer
 
-        // Interpretation loop: run one quad at a time until END (or we run out).
+        // Run until the end
         while ip < self.quads.len() {
             let operator = self.quads[ip].operator.clone();
             let left     = self.quads[ip].left.clone();
@@ -116,6 +113,8 @@ impl VirtualMachine {
                 ip += 1;
 
             } else if operator == ERA {
+                // ERA = ERA _ _ FUNCT_NAME
+
                 // `result` = function name: start a new activation record.
                 // Push it so nested calls (a call inside another call's argument)
                 // each keep their own pending frame.
@@ -124,6 +123,8 @@ impl VirtualMachine {
 
                 ip += 1;
             } else if operator == PARAM {
+                // PARAM = PARAM ADDRESS_VAR _ PARAM_INDX
+
                 // copy value at `left` into parameter #`result` of the frame
                 // currently being built (the top of the pending stack).
                 let arg_address = self.get_address(left)?;
@@ -132,7 +133,6 @@ impl VirtualMachine {
                 let param_number = result.parse::<usize>()
                     .map_err(|_| format!("Invalid param number '{}'", result))?;
 
-                // The innermost call being built is on top of the pending stack.
                 let funct_name = self.pending_functs.last()
                     .ok_or_else(|| format!("PARAM with no pending function"))?
                     .clone();
@@ -143,10 +143,12 @@ impl VirtualMachine {
                 frame.insert(param_address, arg_value);
                 ip += 1;
             } else if operator == GOSUB {
+                // GOSUB = GOSUB _ _ funct_name
+
                 // `result` = function name: push return address (ip + 1), switch
                 // to the new record, and jump to that function's starting_quad.
                 let function = self.directory.functions.get(&result)
-                    .ok_or_else(|| format!("Function '{}' doesn't exist", result))?;
+                    .ok_or_else(|| format!("Function '{}' doesn't exist", result))?; // get function data
                 let start = function.starting_quad;
 
                 // Save where to come back to (the quad AFTER this gosub).
@@ -161,6 +163,8 @@ impl VirtualMachine {
                 ip = start;
 
             } else if operator == RETURN {
+                // RETURN = RETURN ADDRESS_TEMP _ GLOBAL_ADDRESS
+
                 // copy value at `left` into the function's global return slot (`result`).
                 let value_address = self.get_address(left)?;
                 let return_value = self.get_value(value_address)?;
@@ -180,7 +184,6 @@ impl VirtualMachine {
                     .ok_or_else(|| format!("End of function with no caller to go back to"))?;
 
             } else if operator == END {
-                // stop execution.
                 break;
             } else {
                 return Err(format!("Unknown operator '{}' at quad {}", operator, ip));
@@ -323,7 +326,7 @@ impl VirtualMachine {
         Ok(())
     }
 
-    /// Given a function name and a 1-based parameter number, return that
+    /// Given a function name and a 1-based parameter number, return the address of the param
     fn param_address(&self, funct_name: &str, param_number: usize) -> Result<usize, String> {
         let function = self.directory.functions.get(funct_name)
             .ok_or_else(|| format!("Function '{}' doesn't exist", funct_name))?;
