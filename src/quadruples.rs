@@ -1,4 +1,4 @@
-use crate::{constants::{ENTERO_TYPE, FLOTANTE_TYPE, ASSIGN, GOTOF, GOTO, PRINT, TEMP_FLOAT_START, TEMP_INT_START}};
+use crate::constants::{ASSIGN, END, END_F, ENTERO_TYPE, ERA, FLOTANTE_TYPE, GOSUB, GOTO, GOTOF, PARAM, PRINT, RETURN, TEMP_FLOAT_START, TEMP_INT_START};
 use std::{collections::HashMap};
 
 #[derive(Debug, PartialEq)]
@@ -20,7 +20,7 @@ impl Quad {
 #[derive(Debug, PartialEq)]
 pub struct Quadruples {
     pub quads : Vec<Quad>, // Were all the quadruples are stored
-    stack_vars : Vec<(String, String)>, // (name, type) of the variable
+    stack_vars : Vec<(String, String)>, // (address, type) of the variable
     stack_op : Vec<String>, // Stack to save the operators
     stack_jump : Vec<usize>,
     temp_int_count : usize,
@@ -144,8 +144,62 @@ impl Quadruples {
         Ok(SEMANTIC_CUBE[left_indx][right_indx][operand_indx].to_string())
     }
 
+    /// Function to create the ERA for function calls
+    pub fn create_era(&mut self, funct_name : &str) {
+        self.quads.push(Quad { operator: ERA.to_string(), left: "".to_string(), right: "".to_string(), result: funct_name.to_string()});
+    }
+
+    //* Handle the call to functions */
+
+    /// Create the quadruple that saves the parameters of a function
+    pub fn create_param(&mut self, param_counter : usize, parameters : &Vec<String>) -> Result<(), String> {
+        // Param counter tells which index in the list of the parameters, is this one
+        let parameter = self.stack_vars.pop().unwrap();
+
+        // Need to validate that the parameter type being passed is the same type of the expeteced parameter. Need to also validate that didn't passed more arugments
+        if param_counter > parameters.len() {
+            return Err(format!("Too many arguments: parameter #{} doesn't exist", param_counter));
+        }
+        let expected = &parameters[param_counter - 1];
+        if parameter.1 != expected.as_str() {
+            return Err(format!(
+                "Type mismatch on parameter #{}: expected {}, got {}",
+                param_counter, expected, parameter.1
+            ));
+        }
+
+        self.quads.push(Quad { operator: PARAM.to_string(), left: parameter.0, right: "".to_string(), result: param_counter.to_string() });
+        Ok(())
+    }
+
+    pub fn create_gosub(&mut self, funct_name : &str) {
+        self.quads.push(Quad { operator: GOSUB.to_string(), left: "".to_string(), right: "".to_string(), result: funct_name.to_string() });
+    }
+
+    /// Generate the return statement for the functions
+    pub fn create_return(&mut self, funct_type : &str, global_address : &str) -> Result<(), String> {
+        let var_return = self.stack_vars.pop().unwrap();
+
+        // Check if have valid type
+        if var_return.1 != funct_type {
+            return Err(format!( "Return type mismatch: function expects {}, but return expression is {}", funct_type, var_return.1));
+        }
+        self.quads.push(Quad { operator: RETURN.to_string(), left: var_return.0, right: "".to_string(), result:  global_address.to_string()});
+
+        Ok(())
+    }
+
     //* Getter and setter methods */
     pub fn push_var(&mut self, address: String, var_type: String) { self.stack_vars.push((address, var_type)); }
+
+    // This method specifically creates a quad to assign a global funct variable to a temporal variable. i.e. = fact     1000 (where fact is a global variable and 1000 its the temporal address)
+    pub fn push_function_temp(&mut self, address : &str, funct_type : &str) -> Result<(), String> {
+        let temp = self.get_next_temp(funct_type)?;
+        self.quads.push(Quad { operator: ASSIGN.to_string(), left: address.to_string(), right: "".to_string(), result: temp.clone() });
+
+        self.push_var(temp, funct_type.to_string()); // Add it to the stack
+        Ok(())
+    }
 
     pub fn push_op(&mut self, op: String) { self.stack_op.push(op); }
 
@@ -200,5 +254,13 @@ impl Quadruples {
     // return the counts of temporal int and float variables
     pub fn get_temporal_counts(&self) -> (usize, usize) {
         return (self.temp_int_count, self.temp_float_count)
+    }
+
+    pub fn push_end_f(&mut self) {
+        self.quads.push(Quad { operator: END_F.to_string(), left: "".to_string(), right: "".to_string(), result: "".to_string() });
+    }
+
+    pub fn push_end(&mut self) {
+        self.quads.push(Quad { operator: END.to_string(), left: "".to_string(), right: "".to_string(), result: "".to_string() });
     }
 }

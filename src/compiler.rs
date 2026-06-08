@@ -42,6 +42,7 @@ impl Compiler {
         //* Inside the PROGRAM rule */
         self.directory.create_function(GLOBAL, NULA_TYPE)?; // Creates global function
         //* Reading from the top node PROGRAM */
+        //TODO: Despues de terminar de leer todo main, agregar un END
         for node in nodes { // Returns the single PROGRAM that gives Pairs<Rule>
             for program_child in node.into_inner() {
                 match program_child.as_rule() {
@@ -69,6 +70,8 @@ impl Compiler {
                 }
             }
         }
+
+        self.quads.push_end();
         Ok(())
     }
 
@@ -112,7 +115,10 @@ impl Compiler {
                     self.quads.add_goto_while(); // Handles updating the gotoF and adding the goto
                 },
                 //TODO need to handle call and imprime
-                Rule::CALL => {},
+                Rule::CALL => {
+                    // Handle rule: CALL = { ID ~ "(" ~  (EXPRESION ~ ("," ~ EXPRESION)* )? ~  ")" }
+                    self.handle_call(statute_child, true)?;
+                },
                 Rule::IMPRIME => {
                     //* Handle rule: IMPRIME = {"escribe" ~ "(" ~  PRINT_STATEMENT ~ ("," ~ PRINT_STATEMENT)* ~ ")" ~ ";"} */
                     for print_statement in statute_child.into_inner() {
@@ -124,6 +130,53 @@ impl Compiler {
                 },
                 _ => {}
             }
+        }
+        Ok(())
+    }
+
+    /// Handle rule: CALL = { ID ~ "(" ~  (EXPRESION ~ ("," ~ EXPRESION)* )? ~  ")" }
+    pub fn handle_call(&mut self, call_statement : Pair<Rule>, is_statement : bool) -> Result<(), String> {
+        let mut id : &str = "";
+        let mut param_counter : usize = 1;
+
+        for call_child in call_statement.into_inner() {
+            match call_child.as_rule() {
+                Rule::ID => {
+                    id = call_child.as_str();
+
+                    if !self.directory.function_exists(id) {
+                        return Err(format!("Sintax error: Invalid call, function doesn't exist"));
+                    }
+
+                    self.quads.create_era(id);
+                },
+                Rule::EXPRESION => {
+                    self.handle_expression(call_child)?;
+                    let parameters = &self.directory.functions.get(id).unwrap().parameters;
+                    self.quads.create_param(param_counter, parameters)?; // pass vector of parameters of function
+                    param_counter += 1; // Update the param counter that is being saved
+                }
+                _ => {}
+            }
+        }
+        //* After handling all the expressions, generate the GOSUB */
+        self.quads.create_gosub(id);
+
+
+        if let Ok(function_type) = self.directory.get_var_type_of(GLOBAL, id) {
+            // Se checa que el call no venga de un statement, porque si si entonces no se guarda el valor en la variable global
+            if !is_statement {
+                let return_addr = self.directory.get_var_address_of(GLOBAL, id)?;
+                self.quads.push_function_temp(&return_addr, &function_type)?;
+            }
+        } else if !is_statement {
+            return Err(format!("Error: cannot use void function '{}' in an expression", id));
+        }
+
+        // Check if the parameters passed match what the function was expecting
+        let expected = self.directory.functions.get(id).unwrap().parameters.len();        
+        if param_counter - 1 != expected {
+            return Err(format!("Error: function '{}' expects {} args, got {}", id, expected, param_counter - 1));
         }
         Ok(())
     }
@@ -300,8 +353,15 @@ impl Compiler {
                 self.handle_expression(expression)?;
                 self.quads.pop_op(); // Remove the fake bottom after expression resolves
             },
-            Rule::CALL => {},
+            Rule::CALL => {
+                // Handle rule: CALL = { ID ~ "(" ~  (EXPRESION ~ ("," ~ EXPRESION)* )? ~  ")" }
+                // Push a fake bottom so inner flush loops don't consume outer operators
+                self.quads.push_op(PARENTHESIS.to_string());
+                self.handle_call(inner, false)?;
+                self.quads.pop_op(); // Remove the fake bottom after expression resolves
+            },
             Rule::SINGLE_FACTOR => {
+                // Handle rule: Handles rule: SINGLE_FACTOR = { ARITH_OP? ~ (ID | CTE )}
                 // Process single factor, and adds variable to stack
                 let single_factor = inner.into_inner();
                 self.process_single_factor(single_factor)?;
@@ -366,7 +426,6 @@ impl Compiler {
 
     /// Handle rule: FUNCS = { FUNC_TYPE ~ ID ~ "(" ~ PARAMETERS? ~ ")" ~ "{" ~ VARS? ~ BODY ~ RETURN? ~ "}" ~ ";" }
     /// Processes the functions processes
-    //TODO Need to add logic to save in directory function the resources of each function
     fn handle_function(&mut self, function : Pair<Rule>) -> Result<(), String> {
         //* Iterate over function statements, and processes its type and its variables */
         let mut funct_type : &str = "";
@@ -392,20 +451,33 @@ impl Compiler {
                     self.handle_vars(func_child, function_name)?;
                 },
                 Rule::BODY => {
+                    // Se crea la function como una variable global
+                    if funct_type != NULA_TYPE {
+                        self.directory.add_variable_to_function(GLOBAL, function_name, funct_type)?; // Add the function as a variable in global only if it has a return type
+                    }
+
                     // Before handling body, tell where does the function start
                     // Every time handle the body, need to set the starting point of the current function in the diretory
                     let starting_point = self.quads.quads.len();
                     self.directory.set_function_starting_point(&self.quads.get_scope(), starting_point)?;
                     self.handle_body(func_child)?;
-
-                    if funct_type != NULA_TYPE {
-                        self.directory.add_variable_to_function(GLOBAL, function_name, funct_type)?; // Add the function as a variable in global only if it has a return type
-                    }
                 },
                 Rule::RETURN => {
+                    // Handle rule: RETURN = { "return" ~ EXPRESION ~ ";"}
+
                     // Throw an error if the function is NULA_TYPE
-                    if func_child.as_str() == NULA_TYPE {
+                    if funct_type == NULA_TYPE {
                         return Err(format!("Syntax error: cannot have a return statement in a 'nula' function"))
+                    }
+
+                    // Se maneja la expresion y se crea el valor de retorno
+                    let expression = func_child.into_inner().next().unwrap();
+                    self.handle_expression(expression)?;
+
+                    if let Ok(function_address) = self.directory.get_var_address_of(GLOBAL, function_name) {   
+                        self.quads.create_return(funct_type, &function_address)?;
+                    } else {
+                        return Err(format!("Function doesn't exist"));
                     }
                 },
                 _ => {},
@@ -415,6 +487,7 @@ impl Compiler {
         // Need to update the function temporal counts
         let (temp_int_count, temp_float_count) = self.quads.get_temporal_counts();
         self.directory.set_temporal_count(self.quads.get_scope(), temp_int_count, temp_float_count)?;
+        self.quads.push_end_f();
         Ok(())
     }
     
@@ -468,7 +541,7 @@ impl Compiler {
 //* Following Rust convention of adding tests inside file tested */
 #[cfg(test)]
 mod tests {
-    use crate::{constants::{GOTO, PRINT}, directory::{FuncEntry, VarEntry}, quadruples::Quad};
+    use crate::{constants::{END, END_F, GOTO, PRINT, ERA, PARAM, GOSUB, RETURN}, directory::{FuncEntry, VarEntry}, quadruples::Quad};
     use crate::{constants::{GOTOF}};
     use std::{collections::HashMap};
     
@@ -579,6 +652,7 @@ mod tests {
         expected_quads.quads.push(Quad::new(GOTOF.to_string(),  "5000".to_string(), "".to_string(),     "5".to_string()));
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "5001".to_string()));
         expected_quads.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "2".to_string()));
+        expected_quads.quads.push(Quad::new(END_F.to_string(),   "".to_string(),     "".to_string(),     "".to_string()));
 
         // Build the expected quadruples for MAIN: x = (x + 2)*3/(4+7/9)
         expected_quads.quads.push(Quad::new(PLUS.to_string(),  "0".to_string(),    "2001".to_string(), "7000".to_string()));
@@ -597,21 +671,22 @@ mod tests {
 
         // Build expected quadruples for the if statement: si (x > y) { x = x + 1; } sino { y = 3; }
         expected_quads.quads.push(Quad::new(MORE.to_string(),  "0".to_string(),    "1".to_string(),    "7009".to_string()));
-        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "7009".to_string(), "".to_string(),     "21".to_string()));
+        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "7009".to_string(), "".to_string(),     "22".to_string()));
         expected_quads.quads.push(Quad::new(PLUS.to_string(),  "0".to_string(),    "2000".to_string(), "7010".to_string()));
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "7010".to_string(), "".to_string(),    "0".to_string()));
-        expected_quads.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),     "".to_string(),     "22".to_string()));
+        expected_quads.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),     "".to_string(),     "23".to_string()));
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),    "1".to_string()));
 
         // Build expected quadruples for the while + y = 1 + escribe(x+1, y, 'helooo')
-        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "0".to_string(),    "".to_string(),     "25".to_string()));
+        expected_quads.quads.push(Quad::new(GOTOF.to_string(), "0".to_string(),    "".to_string(),     "26".to_string()));
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),    "0".to_string()));
-        expected_quads.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),     "".to_string(),     "22".to_string()));
+        expected_quads.quads.push(Quad::new(GOTO.to_string(),  "".to_string(),     "".to_string(),     "23".to_string()));
         expected_quads.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),    "1".to_string()));
         expected_quads.quads.push(Quad::new(PLUS.to_string(),  "0".to_string(),    "2000".to_string(), "7011".to_string()));
         expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(),     "".to_string(),     "7011".to_string()));
         expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(),     "".to_string(),     "1".to_string()));
         expected_quads.quads.push(Quad::new(PRINT.to_string(), "".to_string(),     "".to_string(),     "4000".to_string()));
+        expected_quads.quads.push(Quad::new(END.to_string(), "".to_string(),     "".to_string(),     "".to_string()));
 
         assert_eq!(generated_quads.quads, expected_quads.quads);
     }
@@ -632,7 +707,7 @@ mod tests {
             ("function1".to_string(), VarEntry::new(FLOTANTE_TYPE, 1001),),
         ]);
         let mut correct_global = FuncEntry::new_with_vars(NULA_TYPE, expected_global_vars, vec![]);
-        correct_global.starting_quad = 5;
+        correct_global.starting_quad = 6;
         correct_global.int_count = 2;
         correct_global.float_count = 2;
         correct_global.temp_int_count = 6;
@@ -979,13 +1054,11 @@ mod tests {
 
     #[test]
     fn test_directory_three_functions_params_and_starts() {
-        // nula fa(a:entero){ { a = a + 1; } }
-        //   fa body: + a 1 t1 (0), = t1 _ a (1)            â†’ start 0
-        // entero fb(b:entero, c:flotante){ { b = b * 2; c = c + c; } }
-        //   * b 2 t1 (2), = t1 _ b (3), + c c t2 (4), = t2 _ c (5)  â†’ start 2
-        // nula fc(d:entero, e:entero, f:entero){ { d = e + f; } }
-        //   + e f t1 (6), = t1 _ d (7)                     â†’ start 6
-        // inicio { g = 5; }  â†’  = 5 _ g (8)                â†’ global start 8
+        // Each function ends with END_F (1 quad), so starts shift by 1 per previous function.
+        // fa body: + a 1 t1 (0), = t1 _ a (1), END_F (2)          -> fa start 0
+        // fb body: * b 2 (3), = (4), + c c (5), = (6), END_F (7)  -> fb start 3
+        // fc body: + e f (8), = (9), END_F (10)                   -> fc start 8
+        // inicio { g = 5; }  ->  = 5 _ g (11), END (12)           -> global start 11
         let mut compiler = Compiler::new();
         compiler.compile_program("
             programa test;
@@ -1018,28 +1091,25 @@ mod tests {
 
         let fb = compiler.directory.functions.get("fb").unwrap();
         assert_eq!(fb.parameters, vec!["entero".to_string(), "flotante".to_string()]);
-        assert_eq!(fb.starting_quad, 2);
+        assert_eq!(fb.starting_quad, 3);
 
         let fc = compiler.directory.functions.get("fc").unwrap();
         assert_eq!(fc.parameters, vec!["entero".to_string(), "entero".to_string(), "entero".to_string()]);
-        assert_eq!(fc.starting_quad, 6);
+        assert_eq!(fc.starting_quad, 8);
 
         let global = compiler.directory.functions.get(GLOBAL).unwrap();
         assert_eq!(global.parameters, Vec::<String>::new());
-        assert_eq!(global.starting_quad, 8);
+        assert_eq!(global.starting_quad, 11);
     }
 
     #[test]
     fn test_directory_four_functions_control_flow_starts() {
-        // nula uno(a:entero){ { si (a > 0) { a = a + 1; }; } }
-        //   > a 0 t1 (0), GOTOF (1), + a 1 t2 (2), = t2 _ a (3)         â†’ start 0
-        // nula dos(b:entero){ { mientras (b < 5) haz { b = b + 1; }; } }
-        //   < b 5 t1 (4), GOTOF (5), + b 1 t2 (6), = t2 _ b (7), GOTO (8) â†’ start 4
-        // nula tres(c:entero){ { si (c == 0) { c = 1; } sino { c = 2; }; } }
-        //   == c 0 t1 (9), GOTOF (10), = 1 _ c (11), GOTO (12), = 2 _ c (13) â†’ start 9
-        // nula cuatro(d:entero){ { d = d - 1; } }
-        //   - d 1 t1 (14), = t1 _ d (15)                                 â†’ start 14
-        // inicio { r = 0; }  â†’  = 0 _ r (16)                             â†’ global start 16
+        // Each function ends with END_F (1 quad). Starts shift accordingly.
+        // uno:   >,GOTOF,+,= (0-3), END_F (4)                       -> start 0
+        // dos:   <,GOTOF,+,=,GOTO (5-9), END_F (10)                 -> start 5
+        // tres:  ==,GOTOF,=,GOTO,= (11-15), END_F (16)              -> start 11
+        // cuatro:-,= (17-18), END_F (19)                            -> start 17
+        // inicio { r = 0; }  ->  = 0 _ r (20), END (21)             -> global start 20
         let mut compiler = Compiler::new();
         compiler.compile_program("
             programa test;
@@ -1079,10 +1149,10 @@ mod tests {
         ").unwrap();
 
         assert_eq!(compiler.directory.functions.get("uno").unwrap().starting_quad, 0);
-        assert_eq!(compiler.directory.functions.get("dos").unwrap().starting_quad, 4);
-        assert_eq!(compiler.directory.functions.get("tres").unwrap().starting_quad, 9);
-        assert_eq!(compiler.directory.functions.get("cuatro").unwrap().starting_quad, 14);
-        assert_eq!(compiler.directory.functions.get(GLOBAL).unwrap().starting_quad, 16);
+        assert_eq!(compiler.directory.functions.get("dos").unwrap().starting_quad, 5);
+        assert_eq!(compiler.directory.functions.get("tres").unwrap().starting_quad, 11);
+        assert_eq!(compiler.directory.functions.get("cuatro").unwrap().starting_quad, 17);
+        assert_eq!(compiler.directory.functions.get(GLOBAL).unwrap().starting_quad, 20);
 
         // Each of these functions has a single entero parameter
         assert_eq!(compiler.directory.functions.get("uno").unwrap().parameters, vec!["entero".to_string()]);
@@ -1094,13 +1164,8 @@ mod tests {
     #[test]
     fn test_directory_five_functions_parameter_tables() {
         // Focus: ParameterTable order + types for functions with 1..5 params.
-        // Bodies are all a single assignment (2 quads each), so starts are 0,2,4,6,8; global 10.
-        // p1(a:entero)                                         â†’ start 0
-        // p2(a:entero, b:flotante)                             â†’ start 2
-        // p3(a:flotante, b:entero, c:flotante)                 â†’ start 4
-        // p4(a:entero, b:entero, c:flotante, d:entero)         â†’ start 6
-        // p5(a:flotante, b:flotante, c:entero, d:entero, e:flotante) â†’ start 8
-        // inicio { m = 1; }                                    â†’ global start 10
+        // Each body is a single assignment (2 quads) + END_F (1) = 3 quads per function.
+        // p1 start 0 | p2 start 3 | p3 start 6 | p4 start 9 | p5 start 12 | global start 15
         let mut compiler = Compiler::new();
         compiler.compile_program("
             programa test;
@@ -1132,30 +1197,30 @@ mod tests {
 
         let p2 = compiler.directory.functions.get("p2").unwrap();
         assert_eq!(p2.parameters, vec!["entero".to_string(), "flotante".to_string()]);
-        assert_eq!(p2.starting_quad, 2);
+        assert_eq!(p2.starting_quad, 3);
 
         let p3 = compiler.directory.functions.get("p3").unwrap();
         assert_eq!(p3.parameters, vec!["flotante".to_string(), "entero".to_string(), "flotante".to_string()]);
-        assert_eq!(p3.starting_quad, 4);
+        assert_eq!(p3.starting_quad, 6);
 
         let p4 = compiler.directory.functions.get("p4").unwrap();
         assert_eq!(p4.parameters, vec!["entero".to_string(), "entero".to_string(), "flotante".to_string(), "entero".to_string()]);
-        assert_eq!(p4.starting_quad, 6);
+        assert_eq!(p4.starting_quad, 9);
 
         let p5 = compiler.directory.functions.get("p5").unwrap();
         assert_eq!(p5.parameters, vec!["flotante".to_string(), "flotante".to_string(), "entero".to_string(), "entero".to_string(), "flotante".to_string()]);
-        assert_eq!(p5.starting_quad, 8);
+        assert_eq!(p5.starting_quad, 12);
 
-        assert_eq!(compiler.directory.functions.get(GLOBAL).unwrap().starting_quad, 10);
+        assert_eq!(compiler.directory.functions.get(GLOBAL).unwrap().starting_quad, 15);
     }
 
     #[test]
     fn test_directory_empty_body_functions_starting_quads() {
-        // Edge: empty-body functions emit 0 quads, so the quad counter does not advance.
-        // nula vacia1(){ { } }            â†’ 0 quads, start 0
-        // nula vacia2(a:entero){ { } }    â†’ 0 quads, start 0 (nothing emitted yet)
-        // nula conuso(b:entero){ { b = b + 1; } }  â†’ + b 1 t1 (0), = t1 _ b (1), start 0
-        // inicio { x = 0; }               â†’ = 0 _ x (2), global start 2
+        // Edge: even empty-body functions emit an END_F quad (1 each).
+        // vacia1: END_F (0)                      -> start 0
+        // vacia2: END_F (1)                      -> start 1
+        // conuso: + b 1 (2), = (3), END_F (4)    -> start 2
+        // inicio { x = 0; }  ->  = 0 _ x (5), END (6)   -> global start 5
         let mut compiler = Compiler::new();
         compiler.compile_program("
             programa test;
@@ -1177,18 +1242,17 @@ mod tests {
             fin
         ").unwrap();
 
-        // Empty functions: counter not advanced, both start at 0
+        // Each empty function still emits its END_F, advancing the counter by 1
         assert_eq!(compiler.directory.functions.get("vacia1").unwrap().starting_quad, 0);
         assert_eq!(compiler.directory.functions.get("vacia1").unwrap().parameters, Vec::<String>::new());
-        assert_eq!(compiler.directory.functions.get("vacia2").unwrap().starting_quad, 0);
+        assert_eq!(compiler.directory.functions.get("vacia2").unwrap().starting_quad, 1);
         assert_eq!(compiler.directory.functions.get("vacia2").unwrap().parameters, vec!["entero".to_string()]);
 
-        // First function that emits quads also starts at 0
-        assert_eq!(compiler.directory.functions.get("conuso").unwrap().starting_quad, 0);
+        assert_eq!(compiler.directory.functions.get("conuso").unwrap().starting_quad, 2);
         assert_eq!(compiler.directory.functions.get("conuso").unwrap().parameters, vec!["entero".to_string()]);
 
-        // main begins after conuso's 2 quads
-        assert_eq!(compiler.directory.functions.get(GLOBAL).unwrap().starting_quad, 2);
+        // main begins after conuso's 2 quads + its END_F
+        assert_eq!(compiler.directory.functions.get(GLOBAL).unwrap().starting_quad, 5);
     }
 
     // ! Following functions tests that the quadruple are being created correctly
@@ -1225,6 +1289,7 @@ mod tests {
         expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "5".to_string()));
         expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2000".to_string(), "7001".to_string()));
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));   // 5
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1259,6 +1324,7 @@ mod tests {
         expected.quads.push(Quad::new(LESS.to_string(),   "7000".to_string(), "2002".to_string(), "7001".to_string()));
         expected.quads.push(Quad::new(GOTOF.to_string(),  "7001".to_string(), "".to_string(),     "5".to_string()));
         expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));   // 5
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1297,6 +1363,7 @@ mod tests {
         expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "6".to_string()));
         expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "1".to_string()));
         expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));   // 6
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1331,6 +1398,7 @@ mod tests {
         expected.quads.push(Quad::new(GOTOF.to_string(),     "7000".to_string(), "".to_string(),     "5".to_string()));
         expected.quads.push(Quad::new(MULTP.to_string(),     "0".to_string(),    "2002".to_string(), "7001".to_string()));
         expected.quads.push(Quad::new(ASSIGN.to_string(),    "7001".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(END.to_string(),       "".to_string(),     "".to_string(),     "".to_string()));   // 5
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1374,6 +1442,7 @@ mod tests {
         expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "1".to_string()));
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "7".to_string()));
         expected.quads.push(Quad::new(ASSIGN.to_string(), "2004".to_string(), "".to_string(),     "1".to_string()));
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));   // 7
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1419,6 +1488,7 @@ mod tests {
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(), "9".to_string()));
         expected.quads.push(Quad::new(SUBS.to_string(),   "0".to_string(),    "1".to_string(), "7002".to_string()));
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(), "0".to_string()));
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(), "".to_string()));   // 9
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1462,6 +1532,7 @@ mod tests {
         expected.quads.push(Quad::new(ASSIGN.to_string(), "2004".to_string(), "".to_string(),     "1".to_string()));
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "8".to_string()));
         expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "1".to_string()));
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));   // 8
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1507,6 +1578,7 @@ mod tests {
         expected.quads.push(Quad::new(ASSIGN.to_string(),    "2003".to_string(), "".to_string(),     "0".to_string()));
         expected.quads.push(Quad::new(GOTO.to_string(),      "".to_string(),     "".to_string(),     "9".to_string()));
         expected.quads.push(Quad::new(ASSIGN.to_string(),    "2004".to_string(), "".to_string(),     "0".to_string()));
+        expected.quads.push(Quad::new(END.to_string(),       "".to_string(),     "".to_string(),     "".to_string()));   // 9
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1561,6 +1633,7 @@ mod tests {
         expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "1".to_string()));  // 7
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "10".to_string())); // 8
         expected.quads.push(Quad::new(ASSIGN.to_string(), "2004".to_string(), "".to_string(),     "1".to_string()));  // 9
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));   // 10
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1613,6 +1686,7 @@ mod tests {
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "12".to_string()));   // 9
         expected.quads.push(Quad::new(MULTP.to_string(),  "0".to_string(),    "2001".to_string(), "7005".to_string())); // 10
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7005".to_string(), "".to_string(),     "1".to_string()));    // 11
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));     // 12
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1649,6 +1723,7 @@ mod tests {
         expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2002".to_string(), "7001".to_string())); // 3
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "0".to_string()));    // 4
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "1".to_string()));    // 5
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));     // 6
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1693,6 +1768,7 @@ mod tests {
         expected.quads.push(Quad::new(PLUS.to_string(),   "1".to_string(),    "0".to_string(),    "7002".to_string())); // 6
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "1".to_string()));    // 7
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "2".to_string()));    // 8
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));     // 9
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1735,6 +1811,7 @@ mod tests {
         expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2003".to_string(), "7002".to_string())); // 5
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "0".to_string()));    // 6
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "3".to_string()));    // 7
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));     // 8
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1787,6 +1864,7 @@ mod tests {
         expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2004".to_string(), "7003".to_string())); // 8
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7003".to_string(), "".to_string(),     "0".to_string()));    // 9
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "1".to_string()));    // 10
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));     // 11
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1844,6 +1922,7 @@ mod tests {
         expected.quads.push(Quad::new(ASSIGN.to_string(),    "7003".to_string(), "".to_string(),     "1".to_string()));    // 10
         expected.quads.push(Quad::new(GOTO.to_string(),      "".to_string(),     "".to_string(),     "7".to_string()));    // 11
         expected.quads.push(Quad::new(ASSIGN.to_string(),    "2004".to_string(), "".to_string(),     "0".to_string()));    // 12
+        expected.quads.push(Quad::new(END.to_string(),       "".to_string(),     "".to_string(),     "".to_string()));     // 13
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1899,8 +1978,10 @@ mod tests {
         expected.quads.push(Quad::new(GOTOF.to_string(),  "7001".to_string(), "".to_string(),     "6".to_string()));    // 3
         expected.quads.push(Quad::new(SUBS.to_string(),   "5001".to_string(), "2000".to_string(), "7002".to_string())); // 4
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "5001".to_string())); // 5
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));    // 6 (end of f)
         // main
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "0".to_string()));    // 6
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "0".to_string()));    // 7
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));    // 8
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -1960,11 +2041,14 @@ mod tests {
         expected.quads.push(Quad::new(PLUS.to_string(),   "5001".to_string(), "2001".to_string(), "7001".to_string())); // 3
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "5001".to_string())); // 4
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "1".to_string()));    // 5
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));    // 6 (end of uno)
         // dos (temps reset)
-        expected.quads.push(Quad::new(MULTP.to_string(),  "5000".to_string(), "2002".to_string(), "7000".to_string())); // 6
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "5001".to_string())); // 7
+        expected.quads.push(Quad::new(MULTP.to_string(),  "5000".to_string(), "2002".to_string(), "7000".to_string())); // 7
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "5001".to_string())); // 8
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));    // 9 (end of dos)
         // main (temps reset)
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "0".to_string()));    // 8
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2003".to_string(), "".to_string(),     "0".to_string()));    // 10
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));    // 11
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2037,21 +2121,25 @@ mod tests {
         // a
         expected.quads.push(Quad::new(PLUS.to_string(),   "5000".to_string(), "2000".to_string(), "7000".to_string())); // 0
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "5001".to_string())); // 1
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),    "".to_string(),     "".to_string()));    // 2 (end of a)
         // b
-        expected.quads.push(Quad::new(EQUAL.to_string(),  "5000".to_string(), "2001".to_string(), "7000".to_string())); // 2
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "6".to_string()));    // 3
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "5001".to_string())); // 4
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "7".to_string()));    // 5
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "5001".to_string())); // 6
+        expected.quads.push(Quad::new(EQUAL.to_string(),  "5000".to_string(), "2001".to_string(), "7000".to_string())); // 3
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "7".to_string()));    // 4 (else at 7)
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "5001".to_string())); // 5
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "8".to_string()));    // 6 (skip else -> 8)
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "5001".to_string())); // 7
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));    // 8 (end of b)
         // c
-        expected.quads.push(Quad::new(MORE.to_string(),   "5000".to_string(), "2001".to_string(), "7000".to_string())); // 7
-        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "13".to_string()));   // 8
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "5000".to_string(), "".to_string(),     "5001".to_string())); // 9
-        expected.quads.push(Quad::new(SUBS.to_string(),   "5000".to_string(), "2000".to_string(), "7001".to_string())); // 10
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "5000".to_string())); // 11
-        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "7".to_string()));    // 12
+        expected.quads.push(Quad::new(MORE.to_string(),   "5000".to_string(), "2001".to_string(), "7000".to_string())); // 9 (loop start)
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "15".to_string()));   // 10 (exit -> 15)
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "5000".to_string(), "".to_string(),     "5001".to_string())); // 11
+        expected.quads.push(Quad::new(SUBS.to_string(),   "5000".to_string(), "2000".to_string(), "7001".to_string())); // 12
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "5000".to_string())); // 13
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "9".to_string()));    // 14 (back to loop start 9)
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));    // 15 (end of c)
         // main
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "0".to_string()));    // 13
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "0".to_string()));    // 16
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));    // 17
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2081,9 +2169,12 @@ mod tests {
         compiler.compile_program(program).unwrap();
 
         // Addresses: main x(gint)=0 | cte 1=2000, 2=2001 | t1=7000
+        // The empty function 'vacia' emits only END_F (idx 0); main follows, then END.
         let mut expected = Quadruples::new();
-        expected.quads.push(Quad::new(PLUS.to_string(),   "2000".to_string(), "2001".to_string(), "7000".to_string())); // 0
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "0".to_string()));    // 1
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));    // 0 (end of vacia)
+        expected.quads.push(Quad::new(PLUS.to_string(),   "2000".to_string(), "2001".to_string(), "7000".to_string())); // 1
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "0".to_string()));    // 2
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));    // 3
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2144,12 +2235,14 @@ mod tests {
         expected.quads.push(Quad::new(PLUS.to_string(),      "5001".to_string(), "2001".to_string(), "7002".to_string())); // 4
         expected.quads.push(Quad::new(ASSIGN.to_string(),    "7002".to_string(), "".to_string(),     "5001".to_string())); // 5
         expected.quads.push(Quad::new(GOTO.to_string(),      "".to_string(),     "".to_string(),     "2".to_string()));    // 6
-        // main (temps reset)
-        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "0".to_string(),    "2000".to_string(), "7000".to_string())); // 7
-        expected.quads.push(Quad::new(GOTOF.to_string(),     "7000".to_string(), "".to_string(),     "12".to_string()));   // 8
-        expected.quads.push(Quad::new(SUBS.to_string(),      "0".to_string(),    "2001".to_string(), "7001".to_string())); // 9
-        expected.quads.push(Quad::new(ASSIGN.to_string(),    "7001".to_string(), "".to_string(),     "0".to_string()));    // 10
-        expected.quads.push(Quad::new(GOTO.to_string(),      "".to_string(),     "".to_string(),     "7".to_string()));    // 11
+        expected.quads.push(Quad::new(END_F.to_string(),     "".to_string(),     "".to_string(),     "".to_string()));    // 7 (end of nested)
+        // main (temps reset, loop start = 8)
+        expected.quads.push(Quad::new(NOT_EQUAL.to_string(), "0".to_string(),    "2000".to_string(), "7000".to_string())); // 8
+        expected.quads.push(Quad::new(GOTOF.to_string(),     "7000".to_string(), "".to_string(),     "13".to_string()));   // 9 (exit -> 13)
+        expected.quads.push(Quad::new(SUBS.to_string(),      "0".to_string(),    "2001".to_string(), "7001".to_string())); // 10
+        expected.quads.push(Quad::new(ASSIGN.to_string(),    "7001".to_string(), "".to_string(),     "0".to_string()));    // 11
+        expected.quads.push(Quad::new(GOTO.to_string(),      "".to_string(),     "".to_string(),     "8".to_string()));    // 12 (back to loop start 8)
+        expected.quads.push(Quad::new(END.to_string(),       "".to_string(),     "".to_string(),     "".to_string()));    // 13
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2188,6 +2281,7 @@ mod tests {
         expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 2
         expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2001".to_string(), "7000".to_string())); // 3
         expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "7000".to_string())); // 4
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));    // 5
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2222,6 +2316,7 @@ mod tests {
         expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "5".to_string()));    // 2
         expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4000".to_string())); // 3
         expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 4
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));    // 5
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2263,6 +2358,7 @@ mod tests {
         expected.quads.push(Quad::new(PLUS.to_string(),   "0".to_string(),    "2003".to_string(), "7002".to_string())); // 5
         expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "0".to_string()));    // 6
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "1".to_string()));    // 7
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));    // 8
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2303,6 +2399,7 @@ mod tests {
         expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "7".to_string()));    // 4
         expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4001".to_string())); // 5
         expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 6
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));    // 7
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2355,10 +2452,12 @@ mod tests {
         expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "6".to_string()));    // 3
         expected.quads.push(Quad::new(SUBS.to_string(),   "5000".to_string(), "2001".to_string(), "7001".to_string())); // 4
         expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "7001".to_string())); // 5
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));    // 6 (end of log)
         // main (temps reset)
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4001".to_string())); // 6
-        expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "0".to_string()));    // 7
-        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 8
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4001".to_string())); // 7
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2002".to_string(), "".to_string(),     "0".to_string()));    // 8
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 9
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));    // 10
 
         assert_eq!(compiler.quads.quads, expected.quads);
     }
@@ -2917,6 +3016,923 @@ mod tests {
         assert_eq!(global.var_directory.get("acumular").unwrap().address, 2);
         assert_eq!(global.var_directory.get("factor_global").unwrap().address, 1000);
         assert_eq!(global.var_directory.get("interpolar").unwrap().address, 1001);
+    }
+
+    // =============================================================================
+    //  9 TESTS GENERADOS (estilo test_big_program_5) — con CALL / RETURN / END_F / END
+    // =============================================================================
+    //
+    //  Convenciones usadas (confirmadas con tu código):
+    //    Direcciones: gint 0+, gfloat 1000+ | cte_int 2000+, cte_float 3000+, literal 4000+
+    //                 local_int 5000+, local_float 6000+ | temp_int 7000+, temp_float 8000+
+    //    Función no-nula => agrega var global con su nombre (tipada por retorno) -> cuenta en int/float_count global.
+    //    Comparaciones (> < == !=) => temp_int.
+    //    Cada función termina con END_F (ocupa índice). main termina con END (ocupa índice).
+    //    starting_quad = índice del primer quad del cuerpo de cada scope.
+    //
+    //  Secuencia de un CALL:  ERA f ; (eval args + PARAM arg #k)* ; GOSUB f ; [ASSIGN gfunc->temp si viene de expresión]
+    //  RETURN:  Quad{RETURN, left=temp/var de la expr, right="", result=dir_global_de_la_func}
+    //           (no crea temp nueva; return de var/cte simple => left = esa dirección directamente)
+    //
+    //  NOTA gramática: 'return' sólo va UNA vez al final de la función (FUNCS: ...BODY ~ RETURN? ~ "}").
+    //  Por eso factorial/fibonacci recursivos calculan el resultado en una variable local y hacen un único
+    //  'return (resultado);' al final.
+    // =============================================================================
+
+
+    // -----------------------------------------------------------------------------
+    //  TEST 1 — Tres funciones no-nula con CALLs en expresión (sienta el modelo)
+    // -----------------------------------------------------------------------------
+    //  Análisis manual:
+    //    global vars: a(int)=0, b(int)=1, c(float)=1000
+    //    returns (orden fuente): doble(entero)->int #3=2 ; mitad(flotante)->float #1=1001 ; triple(entero)->int #4=3
+    //      => global int_count = 4 (a,b,doble,triple), float_count = 2 (c,mitad)
+    //    doble(x:entero): x=5000 ; cuerpo: r = x + x ;  return(r) ;  r local int=5001
+    //      int_count=2 (x,r), float=0 ; temps: +(int) -> temp_int 1
+    //    mitad(y:flotante): y=6000 ; cuerpo: z = y / 2.0 ; return(z) ; z local float=6001
+    //      int_count=0, float_count=2 (y,z) ; temps: /(float) -> temp_float 1
+    //    triple(w:entero): w=5000 ; cuerpo: return(w + w + w)
+    //      int_count=1 (w), float=0 ; temps: +,+ -> temp_int 2
+    //    main: a=5; b = doble(a); c = mitad(3.0); a = triple(b) + 1;
+    //      llamadas en EXPRESIÓN => cada una crea su temp de retorno.
+    //      doble(a): temp_int (copia retorno) ; mitad(3.0): temp_float ; triple(b): temp_int ; +1: temp_int
+    //      => main temp_int = 3 (ret doble, ret triple, suma +1) ; temp_float = 1 (ret mitad)
+    //    constants: int 5 ; float 2.0, 3.0 ; (1 aparece en triple? no: w+w+w no usa cte) ; main usa 1
+    //      ints: 5, 1 ; floats: 2.0, 3.0
+    #[test]
+    fn test_gen_three_returning_functions() {
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa gen1;
+            vars
+                a, b : entero;
+                c : flotante;
+            entero doble(x : entero) {
+                vars r : entero;
+                {
+                    r = x + x;
+                }
+                return r;
+            };
+            flotante mitad(y : flotante) {
+                vars z : flotante;
+                {
+                    z = y / 2.0;
+                }
+                return z;
+            };
+            entero triple(w : entero) {
+                {
+                }
+                return w + w + w;
+            };
+            inicio {
+                a = 5;
+                b = doble(a);
+                c = mitad(3.0);
+                a = triple(b) + 1;
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let doble = dir.get("doble").unwrap();
+        assert_eq!(doble.parameters, vec!["entero".to_string()]);
+        assert_eq!(doble.int_count, 2);
+        assert_eq!(doble.float_count, 0);
+        assert_eq!(doble.temp_int_count, 1);
+        assert_eq!(doble.temp_float_count, 0);
+        assert_eq!(doble.var_directory.get("x").unwrap().address, 5000);
+        assert_eq!(doble.var_directory.get("r").unwrap().address, 5001);
+
+        let mitad = dir.get("mitad").unwrap();
+        assert_eq!(mitad.parameters, vec!["flotante".to_string()]);
+        assert_eq!(mitad.int_count, 0);
+        assert_eq!(mitad.float_count, 2);
+        assert_eq!(mitad.temp_int_count, 0);
+        assert_eq!(mitad.temp_float_count, 1);
+        assert_eq!(mitad.var_directory.get("y").unwrap().address, 6000);
+        assert_eq!(mitad.var_directory.get("z").unwrap().address, 6001);
+
+        let triple = dir.get("triple").unwrap();
+        assert_eq!(triple.parameters, vec!["entero".to_string()]);
+        assert_eq!(triple.int_count, 1);
+        assert_eq!(triple.float_count, 0);
+        assert_eq!(triple.temp_int_count, 2);
+        assert_eq!(triple.temp_float_count, 0);
+        assert_eq!(triple.var_directory.get("w").unwrap().address, 5000);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 4);   // a, b, doble, triple
+        assert_eq!(global.float_count, 2); // c, mitad
+        assert_eq!(global.temp_int_count, 3);
+        assert_eq!(global.temp_float_count, 1);
+        assert_eq!(global.var_directory.get("a").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("b").unwrap().address, 1);
+        assert_eq!(global.var_directory.get("doble").unwrap().address, 2);
+        assert_eq!(global.var_directory.get("triple").unwrap().address, 3);
+        assert_eq!(global.var_directory.get("c").unwrap().address, 1000);
+        assert_eq!(global.var_directory.get("mitad").unwrap().address, 1001);
+
+        // ---- Cuádruplos completos ----
+        // ctes: int 5=2000, 1=2001 | float 2.0=3000, 3.0=3001
+        // doble locals: x=5000, r=5001 (gdir doble=2)
+        // mitad locals: y=6000, z=6001 (gdir mitad=1001)
+        // triple locals: w=5000 (gdir triple=3)
+        // main globals: a=0, b=1, c=1000
+        let mut expected = Quadruples::new();
+        // doble  (start 0)
+        expected.quads.push(Quad::new(PLUS.to_string(),   "5000".to_string(), "5000".to_string(), "7000".to_string())); // 0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "5001".to_string())); // 1
+        expected.quads.push(Quad::new(RETURN.to_string(), "5001".to_string(), "".to_string(),     "2".to_string()));    // 2
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));     // 3
+        // mitad  (start 4)
+        expected.quads.push(Quad::new(DIV.to_string(),    "6000".to_string(), "3000".to_string(), "8000".to_string())); // 4
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "8000".to_string(), "".to_string(),     "6001".to_string())); // 5
+        expected.quads.push(Quad::new(RETURN.to_string(), "6001".to_string(), "".to_string(),     "1001".to_string())); // 6
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));     // 7
+        // triple (start 8)
+        expected.quads.push(Quad::new(PLUS.to_string(),   "5000".to_string(), "5000".to_string(), "7000".to_string())); // 8
+        expected.quads.push(Quad::new(PLUS.to_string(),   "7000".to_string(), "5000".to_string(), "7001".to_string())); // 9
+        expected.quads.push(Quad::new(RETURN.to_string(), "7001".to_string(), "".to_string(),     "3".to_string()));    // 10
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));     // 11
+        // main   (start 12)
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "0".to_string()));    // 12  a=5
+        // b = doble(a)
+        expected.quads.push(Quad::new(ERA.to_string(),    "".to_string(),     "".to_string(),     "doble".to_string()));// 13
+        expected.quads.push(Quad::new(PARAM.to_string(),  "0".to_string(),    "".to_string(),     "1".to_string()));    // 14
+        expected.quads.push(Quad::new(GOSUB.to_string(),  "".to_string(),     "".to_string(),     "doble".to_string()));// 15
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2".to_string(),    "".to_string(),     "7000".to_string())); // 16  = doble -> t
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "1".to_string()));    // 17  b = t
+        // c = mitad(3.0)
+        expected.quads.push(Quad::new(ERA.to_string(),    "".to_string(),     "".to_string(),     "mitad".to_string()));// 18
+        expected.quads.push(Quad::new(PARAM.to_string(),  "3001".to_string(), "".to_string(),     "1".to_string()));    // 19
+        expected.quads.push(Quad::new(GOSUB.to_string(),  "".to_string(),     "".to_string(),     "mitad".to_string()));// 20
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1001".to_string(), "".to_string(),     "8000".to_string())); // 21  = mitad -> t
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "8000".to_string(), "".to_string(),     "1000".to_string())); // 22  c = t
+        // a = triple(b) + 1
+        expected.quads.push(Quad::new(ERA.to_string(),    "".to_string(),     "".to_string(),     "triple".to_string()));//23
+        expected.quads.push(Quad::new(PARAM.to_string(),  "1".to_string(),    "".to_string(),     "1".to_string()));    // 24
+        expected.quads.push(Quad::new(GOSUB.to_string(),  "".to_string(),     "".to_string(),     "triple".to_string()));//25
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "3".to_string(),    "".to_string(),     "7001".to_string())); // 26  = triple -> t
+        expected.quads.push(Quad::new(PLUS.to_string(),   "7001".to_string(), "2001".to_string(), "7002".to_string())); // 27  t + 1
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "0".to_string()));    // 28  a = t
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));     // 29
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+
+        // starting_quad de cada scope
+        assert_eq!(doble.starting_quad, 0);
+        assert_eq!(mitad.starting_quad, 4);
+        assert_eq!(triple.starting_quad, 8);
+        assert_eq!(global.starting_quad, 12);
+    }
+
+
+    // -----------------------------------------------------------------------------
+    //  TEST 2 — FACTORIAL RECURSIVO (adaptado a un solo return al final)
+    // -----------------------------------------------------------------------------
+    //  Análisis manual:
+    //    global vars: f(int)=0 ; factorial(entero)->int #2 = 1
+    //      => global int_count = 2 (f, factorial), float_count = 0
+    //    factorial(n:entero) vars res:entero: n=5000, res=5001 -> int_count 2, float 0
+    //      temps: <(int), -(int), copia_retorno(int), *(int) -> temp_int 4, temp_float 0
+    //    main temps: copia_retorno de factorial(5) -> temp_int 1
+    //    constants: int 2, 1, 5 ; literal 'fact'
+    #[test]
+    fn test_gen_factorial_recursivo() {
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa factrec;
+            vars
+                f : entero;
+            entero factorial(n : entero) {
+                vars res : entero;
+                {
+                    si (n < 2) {
+                        res = 1;
+                    } sino {
+                        res = n * factorial(n - 1);
+                    };
+                }
+                return res;
+            };
+            inicio {
+                f = factorial(5);
+                escribe('fact', f);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let factorial = dir.get("factorial").unwrap();
+        assert_eq!(factorial.parameters, vec!["entero".to_string()]);
+        assert_eq!(factorial.int_count, 2);
+        assert_eq!(factorial.float_count, 0);
+        assert_eq!(factorial.temp_int_count, 4);
+        assert_eq!(factorial.temp_float_count, 0);
+        assert_eq!(factorial.starting_quad, 0);
+        assert_eq!(factorial.var_directory.get("n").unwrap().address, 5000);
+        assert_eq!(factorial.var_directory.get("res").unwrap().address, 5001);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 2);   // f, factorial(return)
+        assert_eq!(global.float_count, 0);
+        assert_eq!(global.temp_int_count, 1);   // copia retorno de factorial(5)
+        assert_eq!(global.temp_float_count, 0);
+        assert_eq!(global.starting_quad, 13);
+        assert_eq!(global.var_directory.get("f").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("factorial").unwrap().address, 1);
+
+        // ---- Cuádruplos completos ----
+        // ctes: int 2=2000, 1=2001, 5=2002 | literal 'fact'=4000
+        // factorial locals: n=5000, res=5001 ; gdir factorial=1
+        let mut expected = Quadruples::new();
+        // factorial (start 0)
+        expected.quads.push(Quad::new(LESS.to_string(),   "5000".to_string(), "2000".to_string(), "7000".to_string())); // 0  n<2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "4".to_string()));    // 1  -> else
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "5001".to_string())); // 2  res=1
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "11".to_string()));   // 3  -> end
+        expected.quads.push(Quad::new(ERA.to_string(),    "".to_string(),     "".to_string(),     "factorial".to_string())); // 4
+        expected.quads.push(Quad::new(SUBS.to_string(),   "5000".to_string(), "2001".to_string(), "7001".to_string())); // 5  n-1
+        expected.quads.push(Quad::new(PARAM.to_string(),  "7001".to_string(), "".to_string(),     "1".to_string()));    // 6
+        expected.quads.push(Quad::new(GOSUB.to_string(),  "".to_string(),     "".to_string(),     "factorial".to_string())); // 7
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),    "".to_string(),     "7002".to_string())); // 8  = factorial -> t
+        expected.quads.push(Quad::new(MULTP.to_string(),  "5000".to_string(), "7002".to_string(), "7003".to_string())); // 9  n * t
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7003".to_string(), "".to_string(),     "5001".to_string())); // 10 res = ...
+        expected.quads.push(Quad::new(RETURN.to_string(), "5001".to_string(), "".to_string(),     "1".to_string()));    // 11 return res
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));     // 12
+        // main (start 13)
+        expected.quads.push(Quad::new(ERA.to_string(),    "".to_string(),     "".to_string(),     "factorial".to_string())); // 13
+        expected.quads.push(Quad::new(PARAM.to_string(),  "2002".to_string(), "".to_string(),     "1".to_string()));    // 14  arg 5
+        expected.quads.push(Quad::new(GOSUB.to_string(),  "".to_string(),     "".to_string(),     "factorial".to_string())); // 15
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),    "".to_string(),     "7000".to_string())); // 16  = factorial -> t
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "0".to_string()));    // 17  f = t
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4000".to_string())); // 18  'fact'
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 19  f
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));     // 20
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+
+    // -----------------------------------------------------------------------------
+    //  TEST 3 — FACTORIAL ITERATIVO (con loop)
+    // -----------------------------------------------------------------------------
+    //  Análisis manual:
+    //    global vars: resultado(int)=0 ; fact_iter(entero)->int #2 = 1
+    //      => global int_count = 2, float_count = 0
+    //    fact_iter(n:entero) vars acc,i:entero: n=5000, acc=5001, i=5002 -> int_count 3
+    //      cuerpo: acc=1; i=1; mientras(i<=n)... pero '<=' NO existe en la gramática (sólo < > == !=).
+    //      Uso mientras(i < n) con acc=acc*(i+1) para evitar <=. Mantengo lógica simple:
+    //        acc = 1; i = 0;
+    //        mientras (i < n) haz { i = i + 1; acc = acc * i; };
+    //      temps: <(int), +(int), *(int) -> temp_int 3
+    //    main: resultado = fact_iter(5); escribe('it', resultado);
+    //      temps: copia_retorno -> temp_int 1
+    //    constants: int 1, 0, 5 ; literal 'it'
+    #[test]
+    fn test_gen_factorial_iterativo() {
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa factit;
+            vars
+                resultado : entero;
+            entero fact_iter(n : entero) {
+                vars acc, i : entero;
+                {
+                    acc = 1;
+                    i = 0;
+                    mientras (i < n) haz {
+                        i = i + 1;
+                        acc = acc * i;
+                    };
+                }
+                return acc;
+            };
+            inicio {
+                resultado = fact_iter(5);
+                escribe('it', resultado);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let fi = dir.get("fact_iter").unwrap();
+        assert_eq!(fi.parameters, vec!["entero".to_string()]);
+        assert_eq!(fi.int_count, 3);
+        assert_eq!(fi.float_count, 0);
+        assert_eq!(fi.temp_int_count, 3);
+        assert_eq!(fi.temp_float_count, 0);
+        assert_eq!(fi.starting_quad, 0);
+        assert_eq!(fi.var_directory.get("n").unwrap().address, 5000);
+        assert_eq!(fi.var_directory.get("acc").unwrap().address, 5001);
+        assert_eq!(fi.var_directory.get("i").unwrap().address, 5002);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 2);   // resultado, fact_iter(return)
+        assert_eq!(global.float_count, 0);
+        assert_eq!(global.temp_int_count, 1);
+        assert_eq!(global.temp_float_count, 0);
+        assert_eq!(global.var_directory.get("resultado").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("fact_iter").unwrap().address, 1);
+
+        // ---- Cuádruplos completos ----
+        // ctes: int 1=2000, 0=2001, 5=2002 | literal 'it'=4000
+        // fact_iter locals: n=5000, acc=5001, i=5002 ; gdir fact_iter=1
+        let mut expected = Quadruples::new();
+        // fact_iter (start 0)
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "5001".to_string())); // 0  acc=1
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "5002".to_string())); // 1  i=0
+        expected.quads.push(Quad::new(LESS.to_string(),   "5002".to_string(), "5000".to_string(), "7000".to_string())); // 2  i<n (start=2)
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "9".to_string()));    // 3
+        expected.quads.push(Quad::new(PLUS.to_string(),   "5002".to_string(), "2000".to_string(), "7001".to_string())); // 4  i+1
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "5002".to_string())); // 5  i=...
+        expected.quads.push(Quad::new(MULTP.to_string(),  "5001".to_string(), "5002".to_string(), "7002".to_string())); // 6  acc*i
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "5001".to_string())); // 7  acc=...
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "2".to_string()));    // 8  -> cond
+        expected.quads.push(Quad::new(RETURN.to_string(), "5001".to_string(), "".to_string(),     "1".to_string()));    // 9  return acc
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));     // 10
+        // main (start 11)
+        expected.quads.push(Quad::new(ERA.to_string(),    "".to_string(),     "".to_string(),     "fact_iter".to_string())); // 11
+        expected.quads.push(Quad::new(PARAM.to_string(),  "2002".to_string(), "".to_string(),     "1".to_string()));    // 12  arg 5
+        expected.quads.push(Quad::new(GOSUB.to_string(),  "".to_string(),     "".to_string(),     "fact_iter".to_string())); // 13
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),    "".to_string(),     "7000".to_string())); // 14  = fact_iter -> t
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "0".to_string()));    // 15  resultado=t
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4000".to_string())); // 16  'it'
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 17  resultado
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));     // 18
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+        assert_eq!(global.starting_quad, 11);
+    }
+
+
+    // -----------------------------------------------------------------------------
+    //  TEST 4 — FIBONACCI RECURSIVO (dos llamadas recursivas en una expresión)
+    // -----------------------------------------------------------------------------
+    //  Análisis manual:
+    //    global vars: r(int)=0 ; fibonacci(entero)->int #2 = 1
+    //      => global int_count = 2, float_count = 0
+    //    fibonacci(n:entero) vars res:entero: n=5000, res=5001 -> int_count 2
+    //      temps: <(int), -(int), ret1(int), -(int), ret2(int), +(int) -> temp_int 6
+    //    main: r = fibonacci(10); escribe('fib', r); -> temp_int 1 (copia retorno)
+    //    constants: int 2, 1, 10 ; literal 'fib'
+    #[test]
+    fn test_gen_fibonacci_recursivo() {
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa fibrec;
+            vars
+                r : entero;
+            entero fibonacci(n : entero) {
+                vars res : entero;
+                {
+                    si (n < 2) {
+                        res = n;
+                    } sino {
+                        res = fibonacci(n - 1) + fibonacci(n - 2);
+                    };
+                }
+                return res;
+            };
+            inicio {
+                r = fibonacci(10);
+                escribe('fib', r);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let fib = dir.get("fibonacci").unwrap();
+        assert_eq!(fib.parameters, vec!["entero".to_string()]);
+        assert_eq!(fib.int_count, 2);
+        assert_eq!(fib.float_count, 0);
+        assert_eq!(fib.temp_int_count, 6);
+        assert_eq!(fib.temp_float_count, 0);
+        assert_eq!(fib.starting_quad, 0);
+        assert_eq!(fib.var_directory.get("n").unwrap().address, 5000);
+        assert_eq!(fib.var_directory.get("res").unwrap().address, 5001);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 2);   // r, fibonacci(return)
+        assert_eq!(global.float_count, 0);
+        assert_eq!(global.temp_int_count, 1);
+        assert_eq!(global.temp_float_count, 0);
+        assert_eq!(global.starting_quad, 18);
+        assert_eq!(global.var_directory.get("r").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("fibonacci").unwrap().address, 1);
+
+        // ---- Cuádruplos completos ----
+        // ctes: int 2=2000, 1=2001, 10=2002 | literal 'fib'=4000
+        // fibonacci locals: n=5000, res=5001 ; gdir fibonacci=1
+        let mut expected = Quadruples::new();
+        // fibonacci (start 0)
+        expected.quads.push(Quad::new(LESS.to_string(),   "5000".to_string(), "2000".to_string(), "7000".to_string())); // 0  n<2
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "4".to_string()));    // 1  -> else
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "5000".to_string(), "".to_string(),     "5001".to_string())); // 2  res=n
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "16".to_string()));   // 3  -> end
+        // else: res = fibonacci(n-1) + fibonacci(n-2)
+        expected.quads.push(Quad::new(ERA.to_string(),    "".to_string(),     "".to_string(),     "fibonacci".to_string())); // 4
+        expected.quads.push(Quad::new(SUBS.to_string(),   "5000".to_string(), "2001".to_string(), "7001".to_string())); // 5  n-1
+        expected.quads.push(Quad::new(PARAM.to_string(),  "7001".to_string(), "".to_string(),     "1".to_string()));    // 6
+        expected.quads.push(Quad::new(GOSUB.to_string(),  "".to_string(),     "".to_string(),     "fibonacci".to_string())); // 7
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),    "".to_string(),     "7002".to_string())); // 8  = fib -> t
+        expected.quads.push(Quad::new(ERA.to_string(),    "".to_string(),     "".to_string(),     "fibonacci".to_string())); // 9
+        expected.quads.push(Quad::new(SUBS.to_string(),   "5000".to_string(), "2000".to_string(), "7003".to_string())); // 10  n-2
+        expected.quads.push(Quad::new(PARAM.to_string(),  "7003".to_string(), "".to_string(),     "1".to_string()));    // 11
+        expected.quads.push(Quad::new(GOSUB.to_string(),  "".to_string(),     "".to_string(),     "fibonacci".to_string())); // 12
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),    "".to_string(),     "7004".to_string())); // 13 = fib -> t
+        expected.quads.push(Quad::new(PLUS.to_string(),   "7002".to_string(), "7004".to_string(), "7005".to_string())); // 14 t+t
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7005".to_string(), "".to_string(),     "5001".to_string())); // 15 res=...
+        expected.quads.push(Quad::new(RETURN.to_string(), "5001".to_string(), "".to_string(),     "1".to_string()));    // 16 return res
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));     // 17
+        // main (start 18)
+        expected.quads.push(Quad::new(ERA.to_string(),    "".to_string(),     "".to_string(),     "fibonacci".to_string())); // 18
+        expected.quads.push(Quad::new(PARAM.to_string(),  "2002".to_string(), "".to_string(),     "1".to_string()));    // 19  arg 10
+        expected.quads.push(Quad::new(GOSUB.to_string(),  "".to_string(),     "".to_string(),     "fibonacci".to_string())); // 20
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),    "".to_string(),     "7000".to_string())); // 21  = fib -> t
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "0".to_string()));    // 22  r = t
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4000".to_string())); // 23  'fib'
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 24  r
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));     // 25
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+    }
+
+
+    // -----------------------------------------------------------------------------
+    //  TEST 5 — FIBONACCI ITERATIVO (con loop)
+    // -----------------------------------------------------------------------------
+    //  Análisis manual:
+    //    global vars: salida(int)=0 ; fib_iter(entero)->int #2 = 1
+    //      => global int_count = 2, float_count = 0
+    //    fib_iter(n:entero) vars a,b,t,i:entero:
+    //      n=5000, a=5001, b=5002, t=5003, i=5004 -> int_count 5
+    //      cuerpo:
+    //        a = 0; b = 1; i = 0;
+    //        mientras (i < n) haz {
+    //            t = a + b;
+    //            a = b;
+    //            b = t;
+    //            i = i + 1;
+    //        };
+    //      temps: <(int), +(a+b)(int), +(i+1)(int) -> temp_int 3
+    //    main: salida = fib_iter(10); escribe('fi', salida); -> temp_int 1
+    //    constants: int 0, 1, 10 ; literal 'fi'
+    #[test]
+    fn test_gen_fibonacci_iterativo() {
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa fibit;
+            vars
+                salida : entero;
+            entero fib_iter(n : entero) {
+                vars a, b, t, i : entero;
+                {
+                    a = 0;
+                    b = 1;
+                    i = 0;
+                    mientras (i < n) haz {
+                        t = a + b;
+                        a = b;
+                        b = t;
+                        i = i + 1;
+                    };
+                }
+                return a;
+            };
+            inicio {
+                salida = fib_iter(10);
+                escribe('fi', salida);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let fi = dir.get("fib_iter").unwrap();
+        assert_eq!(fi.parameters, vec!["entero".to_string()]);
+        assert_eq!(fi.int_count, 5);
+        assert_eq!(fi.float_count, 0);
+        assert_eq!(fi.temp_int_count, 3);
+        assert_eq!(fi.temp_float_count, 0);
+        assert_eq!(fi.starting_quad, 0);
+        assert_eq!(fi.var_directory.get("n").unwrap().address, 5000);
+        assert_eq!(fi.var_directory.get("a").unwrap().address, 5001);
+        assert_eq!(fi.var_directory.get("b").unwrap().address, 5002);
+        assert_eq!(fi.var_directory.get("t").unwrap().address, 5003);
+        assert_eq!(fi.var_directory.get("i").unwrap().address, 5004);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 2);   // salida, fib_iter(return)
+        assert_eq!(global.float_count, 0);
+        assert_eq!(global.temp_int_count, 1);
+        assert_eq!(global.temp_float_count, 0);
+        assert_eq!(global.var_directory.get("salida").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("fib_iter").unwrap().address, 1);
+
+        // ---- Cuádruplos completos ----
+        // ctes: int 0=2000, 1=2001, 10=2002 | literal 'fi'=4000
+        // fib_iter locals: n=5000, a=5001, b=5002, t=5003, i=5004 ; gdir fib_iter=1
+        let mut expected = Quadruples::new();
+        // fib_iter (start 0)
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "5001".to_string())); // 0  a=0
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2001".to_string(), "".to_string(),     "5002".to_string())); // 1  b=1
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "2000".to_string(), "".to_string(),     "5004".to_string())); // 2  i=0
+        expected.quads.push(Quad::new(LESS.to_string(),   "5004".to_string(), "5000".to_string(), "7000".to_string())); // 3  i<n (start=3)
+        expected.quads.push(Quad::new(GOTOF.to_string(),  "7000".to_string(), "".to_string(),     "12".to_string()));   // 4
+        expected.quads.push(Quad::new(PLUS.to_string(),   "5001".to_string(), "5002".to_string(), "7001".to_string())); // 5  a+b
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7001".to_string(), "".to_string(),     "5003".to_string())); // 6  t=...
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "5002".to_string(), "".to_string(),     "5001".to_string())); // 7  a=b
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "5003".to_string(), "".to_string(),     "5002".to_string())); // 8  b=t
+        expected.quads.push(Quad::new(PLUS.to_string(),   "5004".to_string(), "2001".to_string(), "7002".to_string())); // 9  i+1
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7002".to_string(), "".to_string(),     "5004".to_string())); // 10 i=...
+        expected.quads.push(Quad::new(GOTO.to_string(),   "".to_string(),     "".to_string(),     "3".to_string()));    // 11 -> cond
+        expected.quads.push(Quad::new(RETURN.to_string(), "5001".to_string(), "".to_string(),     "1".to_string()));    // 12 return a
+        expected.quads.push(Quad::new(END_F.to_string(),  "".to_string(),     "".to_string(),     "".to_string()));     // 13
+        // main (start 14)
+        expected.quads.push(Quad::new(ERA.to_string(),    "".to_string(),     "".to_string(),     "fib_iter".to_string())); // 14
+        expected.quads.push(Quad::new(PARAM.to_string(),  "2002".to_string(), "".to_string(),     "1".to_string()));    // 15  arg 10
+        expected.quads.push(Quad::new(GOSUB.to_string(),  "".to_string(),     "".to_string(),     "fib_iter".to_string())); // 16
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "1".to_string(),    "".to_string(),     "7000".to_string())); // 17  = fib_iter -> t
+        expected.quads.push(Quad::new(ASSIGN.to_string(), "7000".to_string(), "".to_string(),     "0".to_string()));    // 18  salida=t
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "4000".to_string())); // 19  'fi'
+        expected.quads.push(Quad::new(PRINT.to_string(),  "".to_string(),     "".to_string(),     "0".to_string()));    // 20  salida
+        expected.quads.push(Quad::new(END.to_string(),    "".to_string(),     "".to_string(),     "".to_string()));     // 21
+
+        assert_eq!(compiler.quads.quads, expected.quads);
+        assert_eq!(global.starting_quad, 14);
+    }
+
+
+    // -----------------------------------------------------------------------------
+    //  TEST 6 — EJERCICIO DE LA PROFE (patito) ADAPTADO a tu gramática
+    // -----------------------------------------------------------------------------
+    //  La versión original usa read, do-while, >= y dos 'return' dentro de if/else,
+    //  que NO existen en tu gramática. Se adapta MANTENIENDO la lógica:
+    //    - read(p)            -> p = 5;
+    //    - do{..}while        -> mientras(..) haz {..}
+    //    - while(i>=0)        -> mientras(i > 0)
+    //    - fact con 2 returns -> un solo return al final (acumula en 'res')
+    //  Calculado todo desde las notas. Este test valida DIRECTORIO y CONTEOS
+    //  (el vector de cuádruplos es muy grande; se verifica por separado en los
+    //   tests recursivos 2 y 4). Se incluyen starting_quads.
+    //
+    //  Análisis manual:
+    //    global vars: i=0, j=1, p=2 (int) ; fact(entero)->int #4 = 3 ; inicia nula -> none
+    //      => global int_count = 4 (i,j,p,fact), float_count = 0
+    //    fact(n:entero) vars res:entero: n=5000, res=5001 -> int_count 2
+    //      temps: ==(int), -(int), ret(int), *(int) -> temp_int 4
+    //    inicia(y:entero) vars x:entero: y=5000, x=5001 -> int_count 2
+    //      temps: <(int), *(y*x)(int), +(x+1)(int) -> temp_int 3
+    //    main temps (int), en orden:
+    //      j=p*2: *(1)
+    //      inicia(p*j-5): *(1), -(1)                         -> 2
+    //      while1 i<11: <(1); escribe(i*j-p): *(1),-(1); i=i+1: +(1) -> 4
+    //      while2 i>0: >(1);
+    //         escribe('resultado', fact(i+2)): +(1), ret(1)  -> 2
+    //         escribe('otro res:', fact(p*2-i)): *(1), -(1), ret(1) -> 3
+    //         i=i-1: -(1)                                     -> 1
+    //      => main temp_int = 1+2+4+(1+2+3+1) = 14, temp_float = 0
+    //    starting_quad fact=0. inicia y main: ver asserts (dependen del tamaño de fact;
+    //      por eso aquí sólo se afirma fact=0 y que inicia<main, y los conteos).
+    #[test]
+    fn test_gen_profe_patito_adaptado() {
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa patito;
+            vars
+                i, j, p : entero;
+            entero fact(n : entero) {
+                vars res : entero;
+                {
+                    si (n == 1) {
+                        res = n;
+                    } sino {
+                        res = n * fact(n - 1);
+                    };
+                }
+                return res;
+            };
+            nula inicia(y : entero) {
+                vars x : entero;
+                {
+                    x = 0;
+                    mientras (x < 11) haz {
+                        escribe(y * x);
+                        x = x + 1;
+                    };
+                }
+            };
+            inicio {
+                p = 5;
+                j = p * 2;
+                i = 0;
+                inicia(p * j - 5);
+                mientras (i < 11) haz {
+                    escribe(i * j - p);
+                    i = i + 1;
+                };
+                mientras (i > 0) haz {
+                    escribe('resultado', fact(i + 2));
+                    escribe('otro res:', fact(p * 2 - i));
+                    i = i - 1;
+                };
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let fact = dir.get("fact").unwrap();
+        assert_eq!(fact.parameters, vec!["entero".to_string()]);
+        assert_eq!(fact.int_count, 2);
+        assert_eq!(fact.float_count, 0);
+        assert_eq!(fact.temp_int_count, 4);
+        assert_eq!(fact.temp_float_count, 0);
+        assert_eq!(fact.starting_quad, 0);
+        assert_eq!(fact.var_directory.get("n").unwrap().address, 5000);
+        assert_eq!(fact.var_directory.get("res").unwrap().address, 5001);
+
+        let inicia = dir.get("inicia").unwrap();
+        assert_eq!(inicia.parameters, vec!["entero".to_string()]);
+        assert_eq!(inicia.func_type, NULA_TYPE);
+        assert_eq!(inicia.int_count, 2);
+        assert_eq!(inicia.float_count, 0);
+        assert_eq!(inicia.temp_int_count, 3);
+        assert_eq!(inicia.temp_float_count, 0);
+        assert_eq!(inicia.var_directory.get("y").unwrap().address, 5000);
+        assert_eq!(inicia.var_directory.get("x").unwrap().address, 5001);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 4);   // i, j, p, fact(return)
+        assert_eq!(global.float_count, 0);
+        assert_eq!(global.temp_int_count, 14);
+        assert_eq!(global.temp_float_count, 0);
+        assert_eq!(global.var_directory.get("i").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("j").unwrap().address, 1);
+        assert_eq!(global.var_directory.get("p").unwrap().address, 2);
+        assert_eq!(global.var_directory.get("fact").unwrap().address, 3);
+
+        // fact arranca en 0; inicia después de fact; main después de inicia.
+        assert!(inicia.starting_quad > fact.starting_quad);
+        assert!(global.starting_quad > inicia.starting_quad);
+    }
+
+
+    // -----------------------------------------------------------------------------
+    //  TEST 7 — Mezcla int/float, llamadas en expresión y en statement
+    // -----------------------------------------------------------------------------
+    //  Análisis manual:
+    //    global vars: contador(int)=0 ; total(float)=1000
+    //      returns (orden): cuadrado(flotante)->float #2=1001 ; sumar(entero)->int #2=1 ; imprimir nula->none
+    //      => global int_count = 2 (contador, sumar), float_count = 2 (total, cuadrado)
+    //    cuadrado(x:flotante): x=6000 -> float_count 1, int 0 ; temp: *(float) -> temp_float 1
+    //    sumar(a,b:entero): a=5000, b=5001 -> int_count 2 ; temp: +(int) -> temp_int 1
+    //    imprimir(v:flotante): v=6000 -> float_count 1, int 0 ; temps 0
+    //    main: contador=sumar(3,4) [ret int]; total=cuadrado(2.5) [ret float];
+    //          imprimir(total) [statement, sin temp]; escribe('fin',contador,total)
+    //      => main temp_int 1, temp_float 1
+    //    constants: int 3,4 ; float 2.5 ; literal 'v','fin'
+    #[test]
+    fn test_gen_mixto_llamadas() {
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa gen7;
+            vars
+                contador : entero;
+                total : flotante;
+            flotante cuadrado(x : flotante) {
+                {
+                }
+                return x * x;
+            };
+            entero sumar(a : entero, b : entero) {
+                {
+                }
+                return a + b;
+            };
+            nula imprimir(v : flotante) {
+                {
+                    escribe('v', v);
+                }
+            };
+            inicio {
+                contador = sumar(3, 4);
+                total = cuadrado(2.5);
+                imprimir(total);
+                escribe('fin', contador, total);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let cuadrado = dir.get("cuadrado").unwrap();
+        assert_eq!(cuadrado.parameters, vec!["flotante".to_string()]);
+        assert_eq!(cuadrado.int_count, 0);
+        assert_eq!(cuadrado.float_count, 1);
+        assert_eq!(cuadrado.temp_int_count, 0);
+        assert_eq!(cuadrado.temp_float_count, 1);
+        assert_eq!(cuadrado.var_directory.get("x").unwrap().address, 6000);
+
+        let sumar = dir.get("sumar").unwrap();
+        assert_eq!(sumar.parameters, vec!["entero".to_string(), "entero".to_string()]);
+        assert_eq!(sumar.int_count, 2);
+        assert_eq!(sumar.float_count, 0);
+        assert_eq!(sumar.temp_int_count, 1);
+        assert_eq!(sumar.temp_float_count, 0);
+        assert_eq!(sumar.var_directory.get("a").unwrap().address, 5000);
+        assert_eq!(sumar.var_directory.get("b").unwrap().address, 5001);
+
+        let imprimir = dir.get("imprimir").unwrap();
+        assert_eq!(imprimir.parameters, vec!["flotante".to_string()]);
+        assert_eq!(imprimir.func_type, NULA_TYPE);
+        assert_eq!(imprimir.int_count, 0);
+        assert_eq!(imprimir.float_count, 1);
+        assert_eq!(imprimir.temp_int_count, 0);
+        assert_eq!(imprimir.temp_float_count, 0);
+        assert_eq!(imprimir.var_directory.get("v").unwrap().address, 6000);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 2);   // contador, sumar(return)
+        assert_eq!(global.float_count, 2); // total, cuadrado(return)
+        assert_eq!(global.temp_int_count, 1);
+        assert_eq!(global.temp_float_count, 1);
+        assert_eq!(global.var_directory.get("contador").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("sumar").unwrap().address, 1);
+        assert_eq!(global.var_directory.get("total").unwrap().address, 1000);
+        assert_eq!(global.var_directory.get("cuadrado").unwrap().address, 1001);
+    }
+
+
+    // -----------------------------------------------------------------------------
+    //  TEST 8 — Función que llama a otra dentro de un while
+    // -----------------------------------------------------------------------------
+    //  Análisis manual:
+    //    global vars: acumulado(int)=0
+    //      returns (orden): incrementar(entero)->int #2=1 ; aplicar(entero)->int #3=2
+    //      => global int_count = 3 (acumulado, incrementar, aplicar), float_count = 0
+    //    incrementar(v:entero): v=5000 -> int_count 1 ; temp: +(int) -> temp_int 1
+    //    aplicar(base,veces:entero) vars total,c:entero:
+    //      base=5000, veces=5001, total=5002, c=5003 -> int_count 4
+    //      temps: <(int), copia_retorno de incrementar(int), +(int) -> temp_int 3
+    //    main: acumulado = aplicar(10,3); escribe('res', acumulado) -> temp_int 1
+    //    constants: int 1,0,10,3 ; literal 'res'
+    #[test]
+    fn test_gen_funcion_llama_funcion_en_while() {
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa gen8;
+            vars
+                acumulado : entero;
+            entero incrementar(v : entero) {
+                {
+                }
+                return v + 1;
+            };
+            entero aplicar(base : entero, veces : entero) {
+                vars total, c : entero;
+                {
+                    total = base;
+                    c = 0;
+                    mientras (c < veces) haz {
+                        total = incrementar(total);
+                        c = c + 1;
+                    };
+                }
+                return total;
+            };
+            inicio {
+                acumulado = aplicar(10, 3);
+                escribe('res', acumulado);
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let incrementar = dir.get("incrementar").unwrap();
+        assert_eq!(incrementar.parameters, vec!["entero".to_string()]);
+        assert_eq!(incrementar.int_count, 1);
+        assert_eq!(incrementar.float_count, 0);
+        assert_eq!(incrementar.temp_int_count, 1);
+        assert_eq!(incrementar.temp_float_count, 0);
+        assert_eq!(incrementar.var_directory.get("v").unwrap().address, 5000);
+
+        let aplicar = dir.get("aplicar").unwrap();
+        assert_eq!(aplicar.parameters, vec!["entero".to_string(), "entero".to_string()]);
+        assert_eq!(aplicar.int_count, 4);
+        assert_eq!(aplicar.float_count, 0);
+        assert_eq!(aplicar.temp_int_count, 3);
+        assert_eq!(aplicar.temp_float_count, 0);
+        assert_eq!(aplicar.var_directory.get("base").unwrap().address, 5000);
+        assert_eq!(aplicar.var_directory.get("veces").unwrap().address, 5001);
+        assert_eq!(aplicar.var_directory.get("total").unwrap().address, 5002);
+        assert_eq!(aplicar.var_directory.get("c").unwrap().address, 5003);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 3);   // acumulado, incrementar(return), aplicar(return)
+        assert_eq!(global.float_count, 0);
+        assert_eq!(global.temp_int_count, 1);
+        assert_eq!(global.temp_float_count, 0);
+        assert_eq!(global.var_directory.get("acumulado").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("incrementar").unwrap().address, 1);
+        assert_eq!(global.var_directory.get("aplicar").unwrap().address, 2);
+    }
+
+
+    // -----------------------------------------------------------------------------
+    //  TEST 9 — Llamada anidada como argumento + función float con if
+    // -----------------------------------------------------------------------------
+    //  Análisis manual:
+    //    global vars: g(float)=1000
+    //      returns (orden): escala(flotante)->float #2=1001 ; ajustar(flotante)->float #3=1002 ; contar(entero)->int #1=0
+    //      => global int_count = 1 (contar), float_count = 3 (g, escala, ajustar)
+    //    escala(x,f:flotante): x=6000, f=6001 -> float_count 2 ; temp: *(float) -> temp_float 1
+    //    ajustar(v:flotante) vars r:flotante: v=6000, r=6001 -> float_count 2
+    //      temps: >(int), /(float) -> temp_int 1, temp_float 1
+    //    contar(n:entero): n=5000 -> int_count 1 ; temp: +(int) -> temp_int 1
+    //    main: g = escala(ajustar(20.0), 1.5)  -> ret ajustar(float) + ret escala(float) = temp_float 2
+    //          escribe('g', g, contar(5))       -> ret contar(int) = temp_int 1
+    //      => main temp_int 1, temp_float 2
+    //    constants: float 10.0,2.0,20.0,1.5 ; int 5 ; literal 'g'
+    #[test]
+    fn test_gen_llamada_anidada_arg() {
+        let mut compiler = Compiler::new();
+        compiler.compile_program("
+            programa gen9;
+            vars
+                g : flotante;
+            flotante escala(x : flotante, f : flotante) {
+                {
+                }
+                return x * f;
+            };
+            flotante ajustar(v : flotante) {
+                vars r : flotante;
+                {
+                    r = v;
+                    si (v > 10.0) {
+                        r = v / 2.0;
+                    };
+                }
+                return r;
+            };
+            entero contar(n : entero) {
+                {
+                }
+                return n + n;
+            };
+            inicio {
+                g = escala(ajustar(20.0), 1.5);
+                escribe('g', g, contar(5));
+            }
+            fin
+        ").unwrap();
+
+        let dir = &compiler.directory.functions;
+
+        let escala = dir.get("escala").unwrap();
+        assert_eq!(escala.parameters, vec!["flotante".to_string(), "flotante".to_string()]);
+        assert_eq!(escala.int_count, 0);
+        assert_eq!(escala.float_count, 2);
+        assert_eq!(escala.temp_int_count, 0);
+        assert_eq!(escala.temp_float_count, 1);
+        assert_eq!(escala.var_directory.get("x").unwrap().address, 6000);
+        assert_eq!(escala.var_directory.get("f").unwrap().address, 6001);
+
+        let ajustar = dir.get("ajustar").unwrap();
+        assert_eq!(ajustar.parameters, vec!["flotante".to_string()]);
+        assert_eq!(ajustar.int_count, 0);
+        assert_eq!(ajustar.float_count, 2);
+        assert_eq!(ajustar.temp_int_count, 1);
+        assert_eq!(ajustar.temp_float_count, 1);
+        assert_eq!(ajustar.var_directory.get("v").unwrap().address, 6000);
+        assert_eq!(ajustar.var_directory.get("r").unwrap().address, 6001);
+
+        let contar = dir.get("contar").unwrap();
+        assert_eq!(contar.parameters, vec!["entero".to_string()]);
+        assert_eq!(contar.int_count, 1);
+        assert_eq!(contar.float_count, 0);
+        assert_eq!(contar.temp_int_count, 1);
+        assert_eq!(contar.temp_float_count, 0);
+        assert_eq!(contar.var_directory.get("n").unwrap().address, 5000);
+
+        let global = dir.get(GLOBAL).unwrap();
+        assert_eq!(global.int_count, 1);   // contar(return)
+        assert_eq!(global.float_count, 3); // g, escala(return), ajustar(return)
+        assert_eq!(global.temp_int_count, 1);
+        assert_eq!(global.temp_float_count, 2);
+        assert_eq!(global.var_directory.get("contar").unwrap().address, 0);
+        assert_eq!(global.var_directory.get("g").unwrap().address, 1000);
+        assert_eq!(global.var_directory.get("escala").unwrap().address, 1001);
+        assert_eq!(global.var_directory.get("ajustar").unwrap().address, 1002);
     }
 
 }

@@ -284,4 +284,9 @@ impl DirFunc {
 
         Ok(())
     }
+
+    /// Get if a function exists in the directory
+    pub fn function_exists(&self, function_name : &str) -> bool {
+        return self.functions.contains_key(function_name);
+    }
 }

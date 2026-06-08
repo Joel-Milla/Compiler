@@ -24,6 +24,12 @@ pub const PARENTHESIS : &str = "(";
 pub const GOTOF : &str = "GOTO_F";
 pub const GOTO : &str = "GOTO";
 pub const PRINT : &str = "PRINT";
+pub const ERA : &str = "ERA";
+pub const PARAM : &str = "PARAM";
+pub const GOSUB : &str = "GOSUB";
+pub const RETURN : &str = "RETURN";
+pub const END_F : &str = "END_F";
+pub const END : &str = "END";
 
 //* Where variable counting starts (start address of each memory segment) */
 // Global memory
