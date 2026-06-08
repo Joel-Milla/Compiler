@@ -111,19 +111,42 @@ fn main() {
             return res;
         };
         inicio {
-            r = fibonacci(10);
+            r = fibonacci(12);
             escribe('fib', r);
         }
         fin
     ";
 
-    let mut compiler = Compiler::new();
-    if compiler.compile_program(fibonacci_double).is_ok() {
-        ObjWriter::new(&compiler).write_to_file("program.obj").unwrap();
+    let example_prof = "
+        programa pelos;
+        vars
+            i, j : entero;
+        entero uno(x : entero) {
+            {
+            }
+            return x * 2;
+        };
+        entero dos(x : entero) {
+            {
+            }
+            return x * uno(x);
+        };
+        inicio {
+            i = 5;
+            escribe(dos(i + 3 - 1));
+        }
+        fin
+    ";
 
-        // Load the obj file back into the Virtual Machine and run it.
-        let mut vm = VirtualMachine::new();
-        vm.execute("program.obj").unwrap();
+    let mut compiler = Compiler::new();
+    match compiler.compile_program(fibonacci_double) {
+        Ok(()) => {
+            ObjWriter::new(&compiler).write_to_file("program.obj").unwrap();
+            // Load the obj file back into the Virtual Machine and run it.
+            let mut vm = VirtualMachine::new();
+            vm.execute("program.obj").unwrap();
+        }
+        Err(e) => println!("Compile error: {}", e),
     }
 }
 
