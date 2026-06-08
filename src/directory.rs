@@ -117,7 +117,7 @@ impl FuncEntry {
 
 pub struct DirFunc {
     pub functions : HashMap<String, FuncEntry>, // Name of function, and it attributes
-    constants : HashMap<String, usize>, // (value, address) of the constant being saved
+    pub constants : HashMap<String, usize>, // (value, address) of the constant being saved
     cte_int : usize,
     cte_float : usize,
     cte_literal : usize,

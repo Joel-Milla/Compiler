@@ -3,10 +3,10 @@ use std::{collections::HashMap};
 
 #[derive(Debug, PartialEq)]
 pub struct Quad {
-    operator : String,
-    left : String,
-    right : String,
-    result : String,
+    pub operator : String,
+    pub left : String,
+    pub right : String,
+    pub result : String,
 }
 
 impl Quad {

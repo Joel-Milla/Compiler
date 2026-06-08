@@ -42,7 +42,6 @@ impl Compiler {
         //* Inside the PROGRAM rule */
         self.directory.create_function(GLOBAL, NULA_TYPE)?; // Creates global function
         //* Reading from the top node PROGRAM */
-        //TODO: Despues de terminar de leer todo main, agregar un END
         for node in nodes { // Returns the single PROGRAM that gives Pairs<Rule>
             for program_child in node.into_inner() {
                 match program_child.as_rule() {
@@ -114,7 +113,6 @@ impl Compiler {
                     self.handle_body(body)?;
                     self.quads.add_goto_while(); // Handles updating the gotoF and adding the goto
                 },
-                //TODO need to handle call and imprime
                 Rule::CALL => {
                     // Handle rule: CALL = { ID ~ "(" ~  (EXPRESION ~ ("," ~ EXPRESION)* )? ~  ")" }
                     self.handle_call(statute_child, true)?;
